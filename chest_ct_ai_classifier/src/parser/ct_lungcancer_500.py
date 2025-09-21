@@ -182,29 +182,32 @@ def collect_meta(collect_dicom_data=True):
                             file = list(dicom_path.glob(f"{study_id}*"))[0]
                             extract_archive(file)
                             dcom_dir = dicom_path / file.name / file.name
-                            analyze_dicom_series(dcom_dir)
-                            dicom_data = parse_dicom(dcom_dir)
-
+                            summary = parse_dicom(dcom_dir)
+                            if summary:
+                                result['window_center'] = str(summary.window_center)
+                                result['window_width'] = str(summary.window_width)
+                                result['x'] = str(summary.pixel_spacing[0] or 'N/A')
+                                result['y'] = str(summary.pixel_spacing[1] or 'N/A')
+                                result['z'] = str(summary.pixel_representation or 'N/A')
+                                result['hu_volume'] = ''
                         results.append(result)
                         logging.info("Обработан файл: %s, патология: %s", study_id, pathology)
                     except Exception as e:
                         logging.error("Ошибка обработки файла %s: %s", json_file, e)
                         result = {'id': study_id, 'patology': -1}
-                        for i in range(1, 7):
-                            result[f"doctor_{i}_comment"] = ""
                         results.append(result)
                 else:
                     logging.warning("JSON файл не найден: %s", json_file)
                     result = {'id': study_id, 'patology': -2}
-                    for i in range(1, 7):
-                        result[f"doctor_{i}_comment"] = ""
                     results.append(result)
 
         # Записываем результаты в CSV файл
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['id', 'patology', 'doctor_1_comment', 'doctor_2_comment',
-                          'doctor_3_comment', 'doctor_4_comment', 'doctor_5_comment', 'doctor_6_comment']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                          'doctor_3_comment', 'doctor_4_comment', 'doctor_5_comment', 'doctor_6_comment',
+                          'window_center', 'window_width', 'x', 'y', 'z'
+                          ]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
 
             writer.writeheader()
             writer.writerows(results)

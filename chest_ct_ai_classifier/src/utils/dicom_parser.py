@@ -142,6 +142,11 @@ class DicomSummary(Mapping[str, Any]):
     def z_clean(self):
         return self.series_data_frame['z_position'].dropna()
 
+    @property
+    def hu_volume(self):
+        return ""
+
+
 
 
 def _is_dicom(path: str) -> bool:
