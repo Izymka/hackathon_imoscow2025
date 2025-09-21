@@ -12,6 +12,9 @@ from chest_ct_ai_classifier.src.utils.metadata_extraction import analyze_dicom_s
 
 logging.basicConfig(level=logging.INFO)
 
+# Глобальная переменная для отслеживания первой записи
+csv_initialized = False
+
 base_path = Path(os.getenv("DS_CT_LUNGCANCER_500_FILE", default=None))
 if not base_path.exists():
     logging.error("Directory does not exist: %s", base_path)
@@ -83,10 +86,69 @@ def extract_all():
     except Exception:
         logging.exception("Error accessing directory: %s", base_path)
 
+def write_to_csv(result, output_file, clear_file=False):
+    """
+    Записывает результат в CSV файл.
+
+    Args:
+        result (dict): Словарь с данными для записи
+        output_file (Path): Путь к выходному CSV файлу
+        clear_file (bool): Очистить ли файл перед записью
+    """
+    global csv_initialized
+
+    fieldnames = ['id', 'patology', 'doctor_1_comment', 'doctor_2_comment',
+                  'doctor_3_comment', 'doctor_4_comment', 'doctor_5_comment', 'doctor_6_comment',
+                  'window_center', 'window_width', 'x', 'y', 'z']
+
+    # Если это первая запись или требуется очистка файла
+    if clear_file or not csv_initialized:
+        # Создаем/перезаписываем файл с заголовком
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerow(result)
+        csv_initialized = True
+    else:
+        # Добавляем строку к существующему файлу
+        with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writerow(result)
+
+def read_existing_results(output_file):
+    """
+    Читает существующий CSV файл с результатами и возвращает множество уже обработанных study_id.
+
+    Args:
+        output_file (Path): Путь к CSV файлу с результатами
+
+    Returns:
+        set: Множество уже обработанных study_id
+    """
+    existing_ids = set()
+
+    if not output_file.exists():
+        logging.info("CSV файл с результатами не найден, будет создан новый: %s", output_file)
+        return existing_ids
+
+    try:
+        with open(output_file, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                study_id = row.get('id', '').strip()
+                if study_id:
+                    existing_ids.add(study_id)
+
+        logging.info("Найдено %d уже обработанных записей в файле: %s", len(existing_ids), output_file)
+    except Exception as e:
+        logging.error("Ошибка чтения существующего CSV файла %s: %s", output_file, e)
+
+    return existing_ids
 
 
 
-def collect_meta(collect_dicom_data=True):
+
+def collect_meta(collect_dicom_data=True, recollect=False):
     registry_file = base_path / "dataset_registry.csv"
     protocols_dir = base_path / "protocols"
     output_file = base_path / "pathology_results.csv"
@@ -136,7 +198,17 @@ def collect_meta(collect_dicom_data=True):
 
         return doctor_comments
 
-    results = []
+    global csv_initialized
+    csv_initialized = False  # Сброс флага для очистки файла
+    records_processed = 0
+
+    # Читаем уже существующие записи из CSV файла
+    existing_study_ids = []
+    if not recollect:
+        existing_study_ids = read_existing_results(output_file)
+        if existing_study_ids:
+            csv_initialized = True
+        skipped_count = 0
 
     try:
         # Читаем файл реестра
@@ -151,6 +223,12 @@ def collect_meta(collect_dicom_data=True):
             for line in csvfile:
                 study_id = line.strip()
                 if not study_id or study_id.lower() == 'study':
+                    continue
+
+                # Проверяем, не был ли этот study_id уже обработан
+                if study_id in existing_study_ids:
+                    logging.info("Пропускаем уже обработанный файл: %s", study_id)
+                    skipped_count += 1
                     continue
 
                 # Ищем соответствующий JSON файл
@@ -178,10 +256,14 @@ def collect_meta(collect_dicom_data=True):
                             doctor_key = f"doctor_{i+1}_comment"
                             result[doctor_key] = doctor_comments[i] if i < len(doctor_comments) else "-"
 
-                        if not pathology and collect_dicom_data:
-                            file = list(dicom_path.glob(f"{study_id}*"))[0]
-                            extract_archive(file)
-                            dcom_dir = dicom_path / file.name / file.name
+                        if collect_dicom_data:
+                            dcom_dir = dicom_path / (study_id)
+                            if not dcom_dir.exists():
+                                dcom_tar = dicom_path / (study_id + '.tar.gz')
+                                if not dcom_tar.exists():
+                                    raise FileNotFoundError(f"DICOM directory and archive not found for study_id: {study_id}")
+                                extract_archive(dcom_tar)
+
                             summary = parse_dicom(dcom_dir)
                             if summary:
                                 result['window_center'] = str(summary.window_center)
@@ -190,30 +272,28 @@ def collect_meta(collect_dicom_data=True):
                                 result['y'] = str(summary.pixel_spacing[1] or 'N/A')
                                 result['z'] = str(summary.pixel_representation or 'N/A')
                                 result['hu_volume'] = ''
-                        results.append(result)
+
+                        # Записываем результат сразу в CSV файл
+                        write_to_csv(result, output_file)
+                        records_processed += 1
                         logging.info("Обработан файл: %s, патология: %s", study_id, pathology)
                     except Exception as e:
                         logging.error("Ошибка обработки файла %s: %s", json_file, e)
                         result = {'id': study_id, 'patology': -1}
-                        results.append(result)
+                        # Записываем результат сразу в CSV файл
+                        write_to_csv(result, output_file)
+                        records_processed += 1
                 else:
                     logging.warning("JSON файл не найден: %s", json_file)
                     result = {'id': study_id, 'patology': -2}
-                    results.append(result)
-
-        # Записываем результаты в CSV файл
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['id', 'patology', 'doctor_1_comment', 'doctor_2_comment',
-                          'doctor_3_comment', 'doctor_4_comment', 'doctor_5_comment', 'doctor_6_comment',
-                          'window_center', 'window_width', 'x', 'y', 'z'
-                          ]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
-
-            writer.writeheader()
-            writer.writerows(results)
+                    # Записываем результат сразу в CSV файл
+                    write_to_csv(result, output_file)
+                    records_processed += 1
 
         logging.info("Результаты сохранены в файл: %s", output_file)
-        logging.info("Обработано записей: %d", len(results))
+        logging.info("Обработано новых записей: %d", records_processed)
+        logging.info("Пропущено уже обработанных записей: %d", skipped_count)
+        logging.info("Всего записей в существующем файле: %d", len(existing_study_ids) + records_processed)
 
     except Exception as e:
         logging.error("Ошибка при обработке файлов: %s", e)
@@ -223,6 +303,7 @@ def run():
     parser = argparse.ArgumentParser(description='Process CT scan archives')
     parser.add_argument('--extract', action='store_true', help='Extract archives')
     parser.add_argument('--collect', action='store_true', help='Collect metadata')
+    parser.add_argument('--recollect', action='store_true', help='Recollect')
 
     args = parser.parse_args()
 

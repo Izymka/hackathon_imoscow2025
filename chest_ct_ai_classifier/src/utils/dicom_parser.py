@@ -1,16 +1,15 @@
 import logging
 import os
-import pandas as pd
+from functools import cached_property
 from pathlib import Path
 from typing import Dict, Any, List
-from functools import cached_property
 
+import pandas as pd
 import pydicom
-from pandas.core.interchange.dataframe_protocol import DataFrame
 
 logging.basicConfig(level=logging.INFO)
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Mapping, Iterator, Optional, Tuple
 
 from pydicom import config
@@ -19,7 +18,11 @@ config.enforce_valid_values = False
 
 import warnings
 
+logging.getLogger("pydicom").setLevel(logging.ERROR)
+
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydicom\.valuerep")
+warnings.filterwarnings("ignore", category=UserWarning, module="pydicom")
+warnings.filterwarnings("ignore", message="Invalid value for VR.*")
 
 
 @dataclass()
@@ -147,8 +150,6 @@ class DicomSummary(Mapping[str, Any]):
         return ""
 
 
-
-
 def _is_dicom(path: str) -> bool:
     """Quickly check if a file looks like a DICOM by reading the preamble/magic.
     Falls back to trying pydicom.dcmread if needed.
@@ -168,7 +169,7 @@ def _is_dicom(path: str) -> bool:
         return False
 
 
-def parse_dicom(dicom_dir: str) -> DicomSummary | None:
+def parse_dicom(dicom_dir: str|Path) -> DicomSummary | None:
     """
     Parse a directory with CT DICOMs and return a comprehensive DicomSummary with:
       - study/series identifiers, type (enhanced vs standard), sop class uid
