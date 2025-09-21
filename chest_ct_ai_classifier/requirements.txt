@@ -3,3 +3,11 @@ pydicom==3.0.1
 numpy==1.26.4
 pandas==2.2.3
 ipywidgets==8.1.7
+openpyxl==openpyxl
+opencv-python==4.11.0.86
+pillow==11.2.1
+simpleitk==2.5.2
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124
+plotly==5.24.1

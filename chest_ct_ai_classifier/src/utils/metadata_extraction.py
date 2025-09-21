@@ -307,8 +307,8 @@ def visualize_dicom_geometry(df_z, expected_interval=1.0):
 
     plt.subplot(132)
     plt.plot(z_differences, 'o-', markersize=2)
-    plt.axhline(y=expected_interval, color='r', linestyle='--',
-                label=f'Ожидаемый интервал ({expected_interval} мм)')
+    #plt.axhline(y=expected_interval, color='r', linestyle='--',
+      #          label=f'Ожидаемый интервал ({expected_interval} мм)')
     plt.xlabel('Интервал между срезами')
     plt.ylabel('Расстояние (мм)')
     plt.title('Интервалы между Z-координатами')
@@ -317,7 +317,7 @@ def visualize_dicom_geometry(df_z, expected_interval=1.0):
 
     plt.subplot(133)
     plt.hist(z_differences, bins=30, alpha=0.7)
-    plt.axvline(x=expected_interval, color='r', linestyle='--', label='Ожидаемый интервал')
+    #plt.axvline(x=expected_interval, color='r', linestyle='--', label='Ожидаемый интервал')
     plt.xlabel('Интервал (мм)')
     plt.ylabel('Частота')
     plt.title('Гистограмма интервалов')

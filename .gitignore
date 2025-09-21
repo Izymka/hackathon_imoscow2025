@@ -208,3 +208,5 @@ __marimo__/
 /chest_ct_ai_classifier/data/
 
 .idea
+/chest_ct_ai_classifier/src/data/
+/chest_ct_ai_classifier/reports
