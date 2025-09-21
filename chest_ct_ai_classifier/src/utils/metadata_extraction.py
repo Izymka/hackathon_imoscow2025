@@ -123,81 +123,77 @@ def get_image_position_patient(ds, frame_index=0):
 def analyze_dicom_series(folder_path):
     """
     Анализирует серию DICOM-файлов и выводит подробную информацию о параметрах исследования.
-    Поддерживает Enhanced CT.
+    Теперь использует утилиту parse_dicom для извлечения метаданных и сведений по всей серии.
     """
-    dicom_files = [f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))]
-    dicom_files.sort()
+    from .dicom_parser import parse_dicom
 
-    print(f"Найдено {len(dicom_files)} DICOM файлов")
-
-    if not dicom_files:
+    # Получаем сводную информацию
+    summary = parse_dicom(folder_path)
+    if summary is None:
+        print("Не удалось найти корректные DICOM файлы в папке")
         return pd.DataFrame()
 
-    # Читаем первый файл
-    first_file = os.path.join(folder_path, dicom_files[0])
-    ds = dcmread(first_file, force=True)
-
-    # Определяем, Enhanced ли это
-    is_enhanced = hasattr(ds, 'SOPClassUID') and ds.SOPClassUID == '1.2.840.10008.5.1.4.1.1.2.1'
-    num_frames = int(getattr(ds, 'NumberOfFrames', 1)) if hasattr(ds, 'NumberOfFrames') else 1
-
-    print(f"\nТип файла: {'Enhanced CT' if is_enhanced else 'Стандартный CT'}")
-    if is_enhanced:
-        print(f"Количество фреймов: {num_frames}")
+    # Подсчет/тип
+    print(f"Всего {summary['source_files_total']} DICOM файлов")
+    print(f"\nТип файла: {'Enhanced CT' if summary['is_enhanced_ct'] else 'Стандартный CT'}")
+    if summary.n_frames > 0:
+        print(f"Количество фреймов: {summary.n_frames}")
 
     # === ПАРАМЕТРЫ ИССЛЕДОВАНИЯ ===
     print("\n=== ПАРАМЕТРЫ ИССЛЕДОВАНИЯ ===")
-    print(f"Тип сканера: {get_dicom_tag(ds, 'Manufacturer', 'N/A')} {get_dicom_tag(ds, 'ManufacturerModelName', 'N/A')}")
-    print(f"Модальность: {get_dicom_tag(ds, 'Modality', 'N/A')}")
-    print(f"Область исследования: {get_dicom_tag(ds, 'BodyPartExamined', 'N/A')}")
-    print(f"Тип изображения: {get_dicom_tag(ds, 'ImageType', 'N/A')}")
+    manuf = summary.get('manufacturer') or 'N/A'
+    model = summary.get('manufacturer_model_name') or 'N/A'
+    print(f"Тип сканера: {manuf} {model}")
+    print(f"Модальность: {summary.get('modality', 'N/A')}")
+    print(f"Область исследования: {summary.get('body_part_examined', 'N/A')}")
+    print(f"Тип изображения: {summary.get('image_type', 'N/A')}")
 
     # === ПАРАМЕТРЫ СКАНИРОВАНИЯ ===
     print("\n=== ПАРАМЕТРЫ СКАНИРОВАНИЯ ===")
-    print(f"Напряжение на трубке (кВ): {get_dicom_tag(ds, 'KVP', 'N/A')}")
-    print(f"Ток на трубке (мА): {get_dicom_tag(ds, 'XRayTubeCurrent', 'N/A')}")
-    print(f"Экспозиция (мАс): {get_dicom_tag(ds, 'Exposure', 'N/A')}")
-    print(f"Толщина среза (мм): {get_dicom_tag(ds, 'SliceThickness', 'N/A')}")
-    print(f"Алгоритм реконструкции: {get_dicom_tag(ds, 'ConvolutionKernel', 'N/A')}")
-    print(f"Шаг спирали (Pitch): {get_dicom_tag(ds, 'SpiralPitchFactor', 'N/A')}")
-    print(f"Объемная доза КТ (мГр): {get_dicom_tag(ds, 'CTDIvol', 'N/A')}")
+    print(f"Напряжение на трубке (кВ): {summary.get('kvp', 'N/A')}")
+    print(f"Ток на трубке (мА): {summary.get('xray_tube_current', 'N/A')}")
+    print(f"Экспозиция (мАс): {summary.get('exposure', 'N/A')}")
+    print(f"Толщина среза (мм): {summary.get('slice_thickness', 'N/A')}")
+    print(f"Алгоритм реконструкции: {summary.get('convolution_kernel', 'N/A')}")
+    print(f"Шаг спирали (Pitch): {summary.get('spiral_pitch_factor', 'N/A')}")
+    print(f"Объемная доза КТ (мГр): {summary.get('ctdi_vol', 'N/A')}")
 
     # === ГЕОМЕТРИЯ ===
     print("\n=== ГЕОМЕТРИЧЕСКИЕ ПАРАМЕТРЫ ===")
-    rows = get_dicom_tag(ds, 'Rows', 'N/A')
-    cols = get_dicom_tag(ds, 'Columns', 'N/A')
+    rows = summary.get('rows', 'N/A')
+    cols = summary.get('cols', 'N/A')
     print(f"Размер изображения: {rows}×{cols} пикселей")
 
-    pixel_spacing = get_dicom_tag(ds, 'PixelSpacing', [1, 1])
-    slice_thickness = get_dicom_tag(ds, 'SliceThickness', 'N/A')
-    if isinstance(pixel_spacing, list) and len(pixel_spacing) >= 2:
+    pixel_spacing = summary.get('pixel_spacing') or ['N/A', 'N/A']
+    slice_thickness = summary.get('slice_thickness', 'N/A')
+    if isinstance(pixel_spacing, list) and len(pixel_spacing) >= 2 and all(isinstance(v, (int, float)) for v in pixel_spacing[:2]):
         print(f"Размер пикселя (X,Y): {pixel_spacing[0]}×{pixel_spacing[1]} мм")
         print(f"Размер вокселя (X,Y,Z): {pixel_spacing[0]}×{pixel_spacing[1]}×{slice_thickness} мм")
     else:
         print(f"Размер пикселя: {pixel_spacing} мм")
 
-    print(f"Диаметр реконструкции: {get_dicom_tag(ds, 'ReconstructionDiameter', 'N/A')} мм")
+    print(f"Диаметр реконструкции: {summary.get('reconstruction_diameter', 'N/A')} мм")
 
     # === КООРДИНАТНАЯ СИСТЕМА ===
     print("\n=== КООРДИНАТНАЯ СИСТЕМА ===")
-    print(f"Положение пациента: {get_dicom_tag(ds, 'PatientPosition', 'N/A')}")
-    print(f"Ориентация пациента: {get_dicom_tag(ds, 'PatientOrientation', 'N/A')}")
-    print(f"Ориентация изображения: {get_dicom_tag(ds, 'ImageOrientationPatient', 'N/A')}")
-    print(f"Позиция среза (первого): {get_image_position_patient(ds, 0)}")
-    print(f"Локация среза: {get_dicom_tag(ds, 'SliceLocation', 'N/A')} мм")
+    print(f"Положение пациента: {summary.get('patient_position', 'N/A')}")
+    print(f"Ориентация пациента: {summary.get('patient_orientation', 'N/A')}")
+    print(f"Ориентация изображения: {summary.get('image_orientation_patient', 'N/A')}")
+    print(f"Позиция среза (первого): {summary.get('first_image_position_patient', 'N/A')}")
+    print(f"Локация среза: {summary.get('slice_location', 'N/A')} мм")
 
     # === ВИЗУАЛИЗАЦИЯ ===
     print("\n=== ПАРАМЕТРЫ ВИЗУАЛИЗАЦИИ ===")
-    print(f"Фотометрическая интерпретация: {get_dicom_tag(ds, 'PhotometricInterpretation', 'N/A')}")
-    print(f"Битовая глубина: {get_dicom_tag(ds, 'BitsStored', 'N/A')} бит")
-    pixel_repr = get_dicom_tag(ds, 'PixelRepresentation', 0)
+    print(f"Фотометрическая интерпретация: {summary.get('photometric_interpretation', 'N/A')}")
+    print(f"Битовая глубина: {summary.get('bits_stored', 'N/A')} бит")
+    pixel_repr = summary.get('pixel_representation', 0) or 0
     print(f"Представление пикселей: {'со знаком' if pixel_repr == 1 else 'без знака'}")
 
     # === WINDOW & RESCALE ===
-    window_center = get_dicom_tag(ds, 'WindowCenter', 'N/A')
-    window_width = get_dicom_tag(ds, 'WindowWidth', 'N/A')
-    rescale_slope = get_dicom_tag(ds, 'RescaleSlope', 'N/A')
-    rescale_intercept = get_dicom_tag(ds, 'RescaleIntercept', 'N/A')
+    window_center = summary.get('window_center', 'N/A')
+    window_width = summary.get('window_width', 'N/A')
+    rescale_slope = summary.get('rescale_slope', 'N/A')
+    rescale_intercept = summary.get('rescale_intercept', 'N/A')
 
     print(f"\n=== ПАРАМЕТРЫ ОКНА И RESCALE ===")
     print(f"Уровень окна: {window_center}")
@@ -205,57 +201,47 @@ def analyze_dicom_series(folder_path):
     print(f"Наклон пересчета: {rescale_slope}")
     print(f"Интерцепт пересчета: {rescale_intercept}")
 
-    if rescale_slope != 'N/A' and rescale_intercept != 'N/A':
-        print(f"Формула преобразования: HU = pixel_value × {rescale_slope} + {rescale_intercept}")
-
-        # Пример преобразования
-        if hasattr(ds, 'pixel_array'):
-            pixel_data = ds.pixel_array
-            hu_data = apply_dicom_rescaling(pixel_data, ds)
-            print(f"Диапазон HU значений: [{hu_data.min():.1f}, {hu_data.max():.1f}]")
+    # Пример преобразования и диапазон HU (опционально, читаем пиксели только при необходимости)
+    try:
+        # Попробуем открыть один представительный файл полностью, чтобы получить пиксельные данные
+        rep_path = summary.get('representative_path')
+        if rep_path:
+            ds = dcmread(rep_path, force=True)
+            if hasattr(ds, 'pixel_array') and rescale_slope is not None and rescale_intercept is not None:
+                hu_data = apply_dicom_rescaling(ds.pixel_array, ds)
+                print(f"Диапазон HU значений: [{hu_data.min():.1f}, {hu_data.max():.1f}]")
+    except Exception:
+        pass
 
     # === ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ ===
     print("\n=== ТЕХНИЧЕСКИЕ ПАРАМЕТРЫ ===")
-    print(f"Наклон гентри: {get_dicom_tag(ds, 'GantryDetectorTilt', 'N/A')} градусов")
-    print(f"Высота стола: {get_dicom_tag(ds, 'TableHeight', 'N/A')} мм")
-    print(f"Направление вращения: {get_dicom_tag(ds, 'RotationDirection', 'N/A')}")
-    print(f"Фокусные пятна: {get_dicom_tag(ds, 'FocalSpots', 'N/A')} мм")
-    print(f"Тип фильтра: {get_dicom_tag(ds, 'FilterType', 'N/A')}")
-    print(f"Мощность генератора: {get_dicom_tag(ds, 'GeneratorPower', 'N/A')} кВт")
-    print(f"Тип модуляции экспозиции: {get_dicom_tag(ds, 'ExposureModulationType', 'N/A')}")
+    print(f"Наклон гентри: {summary.get('gantry_detector_tilt', 'N/A')} градусов")
+    print(f"Высота стола: {summary.get('table_height', 'N/A')} мм")
+    print(f"Направление вращения: {summary.get('rotation_direction', 'N/A')}")
+    print(f"Фокусные пятна: {summary.get('focal_spots', 'N/A')} мм")
+    print(f"Тип фильтра: {summary.get('filter_type', 'N/A')}")
+    print(f"Мощность генератора: {summary.get('generator_power', 'N/A')} кВт")
+    print(f"Тип модуляции экспозиции: {summary.get('exposure_modulation_type', 'N/A')}")
 
     # === СБОР ДАННЫХ ПО ВСЕЙ СЕРИИ ===
-    z_data = []
-    instance_numbers = []
-    rescale_params = []
+    names = summary.get('series_file_names') or []
+    insts = summary.get('instance_numbers') or []
+    z_positions = summary.get('z_positions') or []
+    slopes = summary.get('rescale_slopes_series') or []
+    intercepts = summary.get('rescale_intercepts_series') or []
 
-    if is_enhanced:
-        # Enhanced CT: один файл, много фреймов
-        for frame_idx in range(num_frames):
-            z_pos = get_image_position_patient(ds, frame_idx)[2]
-            slope = float(get_dicom_tag(ds, 'RescaleSlope', 1))
-            intercept = float(get_dicom_tag(ds, 'RescaleIntercept', 0))
-            z_data.append((f"frame_{frame_idx:04d}", frame_idx + 1, z_pos, slope, intercept))
-    else:
-        # Обычный CT: много файлов
-        for filename in dicom_files:
-            file_path = os.path.join(folder_path, filename)
-            try:
-                ds_file = dcmread(file_path, force=True)
-                z_pos = get_image_position_patient(ds_file, 0)[2]
-                instance_num = get_dicom_tag(ds_file, 'InstanceNumber', 0)
-                slope = float(get_dicom_tag(ds_file, 'RescaleSlope', 1))
-                intercept = float(get_dicom_tag(ds_file, 'RescaleIntercept', 0))
-                z_data.append((filename, instance_num, z_pos, slope, intercept))
-            except Exception as e:
-                print(f"Ошибка чтения {filename}: {e}")
-
-    df_z = pd.DataFrame(z_data, columns=['filename', 'instance_number', 'z_position', 'rescale_slope', 'rescale_intercept'])
+    df_z = pd.DataFrame({
+        'filename': names if names else [f'frame_{i:04d}' for i in range(len(z_positions))],
+        'instance_number': insts if insts else list(range(1, len(z_positions)+1)),
+        'z_position': z_positions,
+        'rescale_slope': slopes if slopes else [rescale_slope]*len(z_positions),
+        'rescale_intercept': intercepts if intercepts else [rescale_intercept]*len(z_positions),
+    })
     df_z = df_z.sort_values('z_position').reset_index(drop=True)
 
     # Анализ rescale
-    unique_slopes = df_z['rescale_slope'].unique()
-    unique_intercepts = df_z['rescale_intercept'].unique()
+    unique_slopes = df_z['rescale_slope'].dropna().unique()
+    unique_intercepts = df_z['rescale_intercept'].dropna().unique()
 
     print(f"\n=== АНАЛИЗ ПАРАМЕТРОВ RESCALE ПО СЕРИИ ===")
     print(f"Уникальные значения rescale_slope: {unique_slopes}")
@@ -267,24 +253,28 @@ def analyze_dicom_series(folder_path):
         print("⚠ Внимание: параметры rescale различаются между файлами/фреймами!")
 
     print(f"\n=== СТАТИСТИКА Z-КООРДИНАТ ===")
-    print(f"Минимальная Z-координата: {df_z['z_position'].min():.2f} мм")
-    print(f"Максимальная Z-координата: {df_z['z_position'].max():.2f} мм")
-    print(f"Общий диапазон: {df_z['z_position'].max() - df_z['z_position'].min():.2f} мм")
-    print(f"Количество уникальных Z-positions: {df_z['z_position'].nunique()}")
+    if len(df_z) > 0 and df_z['z_position'].notna().any():
+        z_clean = df_z['z_position'].dropna()
+        print(f"Минимальная Z-координата: {z_clean.min():.2f} мм")
+        print(f"Максимальная Z-координата: {z_clean.max():.2f} мм")
+        print(f"Общий диапазон: {z_clean.max() - z_clean.min():.2f} мм")
+        print(f"Количество уникальных Z-positions: {z_clean.nunique()}")
 
-    if len(df_z) > 1:
-        z_differences = np.diff(df_z['z_position'].values)
-        print(f"\n=== АНАЛИЗ ИНТЕРВАЛОВ ===")
-        print(f"Средний интервал между срезами: {np.mean(z_differences):.4f} мм")
-        print(f"Минимальный интервал: {np.min(z_differences):.4f} мм")
-        print(f"Максимальный интервал: {np.max(z_differences):.4f} мм")
-        print(f"Стандартное отклонение интервалов: {np.std(z_differences):.4f} мм")
+        if len(z_clean) > 1:
+            z_differences = np.diff(z_clean.values)
+            print(f"\n=== АНАЛИЗ ИНТЕРВАЛОВ ===")
+            print(f"Средний интервал между срезами: {np.mean(z_differences):.4f} мм")
+            print(f"Минимальный интервал: {np.min(z_differences):.4f} мм")
+            print(f"Максимальный интервал: {np.max(z_differences):.4f} мм")
+            print(f"Стандартное отклонение интервалов: {np.std(z_differences):.4f} мм")
 
-        expected_interval = float(slice_thickness) if slice_thickness != 'N/A' else 1.0
-        deviation = np.abs(z_differences - expected_interval)
-        print(f"\nОтклонение от ожидаемой толщины {expected_interval} мм:")
-        print(f"Максимальное отклонение: {np.max(deviation):.4f} мм")
-        print(f"Среднее отклонение: {np.mean(deviation):.4f} мм")
+            expected_interval = float(slice_thickness) if isinstance(slice_thickness, (int, float, np.floating)) else 1.0
+            deviation = np.abs(z_differences - expected_interval)
+            print(f"\nОтклонение от ожидаемой толщины {expected_interval} мм:")
+            print(f"Максимальное отклонение: {np.max(deviation):.4f} мм")
+            print(f"Среднее отклонение: {np.mean(deviation):.4f} мм")
+    else:
+        print("Недостаточно данных по Z для анализа")
 
     return df_z
 

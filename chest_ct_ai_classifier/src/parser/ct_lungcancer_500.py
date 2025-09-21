@@ -7,15 +7,22 @@ import shutil
 import tarfile
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
-base_path = Path(os.getenv("DS_CT_LUNGCANCER_500_FILE", default=None))
+from chest_ct_ai_classifier.src.utils.dicom_parser import parse_dicom
+from chest_ct_ai_classifier.src.utils.metadata_extraction import analyze_dicom_series
 
+logging.basicConfig(level=logging.INFO)
+
+base_path = Path(os.getenv("DS_CT_LUNGCANCER_500_FILE", default=None))
 if not base_path.exists():
-    logging.warning("Directory does not exist: %s", base_path)
+    logging.error("Directory does not exist: %s", base_path)
     exit(1)
 
+dicom_path = base_path / "dicom"
+if not dicom_path.exists():
+    logging.error("Dicom directory does not exist: %s", dicom_path)
+    exit(1)
 
-def extract_archive(file, dicom_path):
+def extract_archive(file):
     # If this is a file and looks like an archive, check for extracted directory
     try:
         if file.is_file():
@@ -66,15 +73,11 @@ def extract_archive(file, dicom_path):
 
 def extract_all():
     try:
-        dicom_dir = base_path / "dicom"
-        if not dicom_dir.exists():
-            logging.error("Dicom directory does not exist: %s", dicom_dir)
-            return
-        files = list(dicom_dir.iterdir())
+        files = list(dicom_path.iterdir())
         logging.info("Dicom directory exist. Found %d files:", len(files))
         for file in files:
             logging.info(file.name)
-            extract_archive(file, dicom_dir)
+            extract_archive(file)
     except PermissionError:
         logging.error("Permission denied accessing directory: %s", base_path)
     except Exception:
@@ -83,7 +86,7 @@ def extract_all():
 
 
 
-def collect_meta():
+def collect_meta(collect_dicom_data=True):
     registry_file = base_path / "dataset_registry.csv"
     protocols_dir = base_path / "protocols"
     output_file = base_path / "pathology_results.csv"
@@ -153,6 +156,8 @@ def collect_meta():
                 # Ищем соответствующий JSON файл
                 json_file = protocols_dir / f"{study_id}.json"
 
+                logging.info("Обработка файла: %s", study_id)
+
                 if json_file.exists():
                     try:
                         with open(json_file, 'r', encoding='utf-8-sig') as f:
@@ -172,6 +177,13 @@ def collect_meta():
                         for i in range(6):
                             doctor_key = f"doctor_{i+1}_comment"
                             result[doctor_key] = doctor_comments[i] if i < len(doctor_comments) else "-"
+
+                        if not pathology and collect_dicom_data:
+                            file = list(dicom_path.glob(f"{study_id}*"))[0]
+                            extract_archive(file)
+                            dcom_dir = dicom_path / file.name / file.name
+                            analyze_dicom_series(dcom_dir)
+                            dicom_data = parse_dicom(dcom_dir)
 
                         results.append(result)
                         logging.info("Обработан файл: %s, патология: %s", study_id, pathology)
