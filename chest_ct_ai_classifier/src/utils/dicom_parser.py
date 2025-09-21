@@ -10,6 +10,11 @@ logging.basicConfig(level=logging.INFO)
 from dataclasses import dataclass, asdict
 from typing import Mapping, Iterator, Optional, Tuple
 
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module=r"pydicom\.valuerep")
+
+
 @dataclass(frozen=True)
 class DicomSummary(Mapping[str, Any]):
     study_uid: Optional[str]
@@ -63,7 +68,7 @@ def _is_dicom(path: str) -> bool:
         return False
 
 
-def parse_dicom(dicom_dir: str) -> DicomSummary | None:
+def parse_dicom(dicom_dir: str, deep: int = 1) -> DicomSummary | None:
     """
     Parse a directory that may contain either:
       - a single multi-frame DICOM file (e.g., Enhanced CT where all frames are in one file), or
@@ -96,6 +101,7 @@ def parse_dicom(dicom_dir: str) -> DicomSummary | None:
 
     # 1) Collect readable DICOM files
     dicom_files: List[Path] = []
+
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
             fp = Path(dirpath) / name
@@ -115,10 +121,14 @@ def parse_dicom(dicom_dir: str) -> DicomSummary | None:
 
     # Read headers and gather per-file metadata
     headers = []
+    processed_headers = 0
     for fp in dicom_files:
         try:
             ds = pydicom.dcmread(str(fp), stop_before_pixels=True, force=True)
             headers.append((fp, ds))
+            processed_headers += 1
+            if processed_headers >= deep:
+                break
         except Exception as e:
             logging.debug(f"Skip unreadable file {fp}: {e}")
 
@@ -131,7 +141,8 @@ def parse_dicom(dicom_dir: str) -> DicomSummary | None:
     study_uids = [getattr(ds, 'StudyInstanceUID', None) for _, ds in headers if getattr(ds, 'StudyInstanceUID', None)]
     study_uid = Counter(study_uids).most_common(1)[0][0] if study_uids else None
 
-    series_uids_all = [getattr(ds, 'SeriesInstanceUID', None) for _, ds in headers if getattr(ds, 'SeriesInstanceUID', None)]
+    series_uids_all = [getattr(ds, 'SeriesInstanceUID', None) for _, ds in headers if
+                       getattr(ds, 'SeriesInstanceUID', None)]
     series_uid_ordered = [uid for uid, _ in Counter(series_uids_all).most_common()]
 
     # Group by SeriesInstanceUID to decide if multi-file volume or single multi-frame file
@@ -160,7 +171,8 @@ def parse_dicom(dicom_dir: str) -> DicomSummary | None:
     else:
         # Pick dominant series as the volume
         dominant_series = series_uid_ordered[0] if series_uid_ordered else None
-        series_headers = [(fp, ds) for fp, ds in headers if getattr(ds, 'SeriesInstanceUID', None) == dominant_series] if dominant_series else headers
+        series_headers = [(fp, ds) for fp, ds in headers if
+                          getattr(ds, 'SeriesInstanceUID', None) == dominant_series] if dominant_series else headers
         # Count frames as number of files in the chosen series
         n_frames = len(series_headers)
         is_multi_frame_file = False
@@ -203,7 +215,7 @@ def parse_dicom(dicom_dir: str) -> DicomSummary | None:
             if diffs:
                 # use median to be robust
                 diffs.sort()
-                spacing_between_slices = diffs[len(diffs)//2]
+                spacing_between_slices = diffs[len(diffs) // 2]
 
     modality = getattr(rep_ds, 'Modality', None)
 
