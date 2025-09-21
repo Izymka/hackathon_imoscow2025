@@ -1,9 +1,12 @@
 import logging
 import os
+import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List
+from functools import cached_property
 
 import pydicom
+from pandas.core.interchange.dataframe_protocol import DataFrame
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,7 +22,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydicom\.valuerep")
 
 
-@dataclass(frozen=True)
+@dataclass()
 class DicomSummary(Mapping[str, Any]):
     # Basic study/series
     study_uid: Optional[str]
@@ -109,6 +112,36 @@ class DicomSummary(Mapping[str, Any]):
         if key not in self.__dict__:
             return default
         return self.__dict__[key]
+
+    @cached_property
+    def series_data_frame(self):
+        names = self.get('series_file_names') or []
+        insts = self.get('instance_numbers') or []
+        z_positions = self.get('z_positions') or []
+        slopes = self.get('rescale_slopes_series') or []
+        intercepts = self.get('rescale_intercepts_series') or []
+
+        df_z = pd.DataFrame({
+            'filename': names if names else [f'frame_{i:04d}' for i in range(len(z_positions))],
+            'instance_number': insts if insts else list(range(1, len(z_positions) + 1)),
+            'z_position': z_positions,
+            'rescale_slope': slopes if slopes else [self.rescale_slope] * len(z_positions),
+            'rescale_intercept': intercepts if intercepts else [self.rescale_intercept] * len(z_positions),
+        })
+        return df_z.sort_values('z_position').reset_index(drop=True)
+
+    @property
+    def unique_slopes(self):
+        return self.series_data_frame['rescale_slope'].dropna().unique()
+
+    @property
+    def unique_intercepts(self):
+        return self.series_data_frame['rescale_intercept'].dropna().unique()
+
+    @cached_property
+    def z_clean(self):
+        return self.series_data_frame['z_position'].dropna()
+
 
 
 def _is_dicom(path: str) -> bool:

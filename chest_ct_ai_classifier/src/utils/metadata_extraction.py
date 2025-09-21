@@ -134,15 +134,15 @@ def analyze_dicom_series(folder_path):
         return pd.DataFrame()
 
     # Подсчет/тип
-    print(f"Всего {summary['source_files_total']} DICOM файлов")
-    print(f"\nТип файла: {'Enhanced CT' if summary['is_enhanced_ct'] else 'Стандартный CT'}")
+    print(f"Всего {summary.source_files_total} DICOM файлов")
+    print(f"\nТип файла: {'Enhanced CT' if summary.is_enhanced_ct else 'Стандартный CT'}")
     if summary.n_frames > 0:
         print(f"Количество фреймов: {summary.n_frames}")
 
     # === ПАРАМЕТРЫ ИССЛЕДОВАНИЯ ===
     print("\n=== ПАРАМЕТРЫ ИССЛЕДОВАНИЯ ===")
-    manuf = summary.get('manufacturer') or 'N/A'
-    model = summary.get('manufacturer_model_name') or 'N/A'
+    manuf = summary.manufacturer or 'N/A'
+    model = summary.manufacturer_model_name or 'N/A'
     print(f"Тип сканера: {manuf} {model}")
     print(f"Модальность: {summary.get('modality', 'N/A')}")
     print(f"Область исследования: {summary.get('body_part_examined', 'N/A')}")
@@ -224,24 +224,12 @@ def analyze_dicom_series(folder_path):
     print(f"Тип модуляции экспозиции: {summary.get('exposure_modulation_type', 'N/A')}")
 
     # === СБОР ДАННЫХ ПО ВСЕЙ СЕРИИ ===
-    names = summary.get('series_file_names') or []
-    insts = summary.get('instance_numbers') or []
-    z_positions = summary.get('z_positions') or []
-    slopes = summary.get('rescale_slopes_series') or []
-    intercepts = summary.get('rescale_intercepts_series') or []
-
-    df_z = pd.DataFrame({
-        'filename': names if names else [f'frame_{i:04d}' for i in range(len(z_positions))],
-        'instance_number': insts if insts else list(range(1, len(z_positions)+1)),
-        'z_position': z_positions,
-        'rescale_slope': slopes if slopes else [rescale_slope]*len(z_positions),
-        'rescale_intercept': intercepts if intercepts else [rescale_intercept]*len(z_positions),
-    })
-    df_z = df_z.sort_values('z_position').reset_index(drop=True)
+    df_z = summary.series_data_frame
+    df_z2 = summary.series_data_frame
 
     # Анализ rescale
-    unique_slopes = df_z['rescale_slope'].dropna().unique()
-    unique_intercepts = df_z['rescale_intercept'].dropna().unique()
+    unique_slopes = summary.unique_slopes
+    unique_intercepts = summary.unique_intercepts
 
     print(f"\n=== АНАЛИЗ ПАРАМЕТРОВ RESCALE ПО СЕРИИ ===")
     print(f"Уникальные значения rescale_slope: {unique_slopes}")
@@ -253,8 +241,8 @@ def analyze_dicom_series(folder_path):
         print("⚠ Внимание: параметры rescale различаются между файлами/фреймами!")
 
     print(f"\n=== СТАТИСТИКА Z-КООРДИНАТ ===")
-    if len(df_z) > 0 and df_z['z_position'].notna().any():
-        z_clean = df_z['z_position'].dropna()
+    if len(df_z) > 0 and len(summary.z_clean) > 0:
+        z_clean = summary.z_clean
         print(f"Минимальная Z-координата: {z_clean.min():.2f} мм")
         print(f"Максимальная Z-координата: {z_clean.max():.2f} мм")
         print(f"Общий диапазон: {z_clean.max() - z_clean.min():.2f} мм")
