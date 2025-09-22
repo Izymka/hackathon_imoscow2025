@@ -357,7 +357,7 @@ class DICOMProcessor:
 def parse_args():
     p = argparse.ArgumentParser(description="Prepare DICOM studies into 3D tensors")
 
-    p.add_argument("--output", type=str, default="./data/data_tensors/studies",
+    p.add_argument("--output", type=str, default="./data/tensors",
                    help="Output folder for .pt files")
     p.add_argument("--spacing", type=float, nargs=3, default=(1.0, 1.0, 1.0),
                    help="Target isotropic spacing (x y z) in mm")
