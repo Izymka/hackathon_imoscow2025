@@ -319,34 +319,40 @@ def collect_meta(collect_dicom_data=True, recollect=False):
 def move_dataset():
     logging.info("Moving dataset to target path: %s", dataset_target_path)
     # read results from result_csv_output_file, for each study_id, move dicom files to target path
+    rows = []
     with open(result_csv_output_file, 'r', encoding='utf-8') as csvfile:
         reader = csv.DictReader(csvfile)
-        for row in reader:
-            study_id = row.get('id', '').strip()
-            if study_id:
-                if row.get('pathology') != "0":
-                    logging.info("Skipping study ID: %s, pathology is not present", study_id)
-                    continue
-                logging.info("Processing study ID: %s", study_id)
-                dcom_dir = dicom_path / study_id / study_id
-                if dcom_dir.exists():
-                    logging.info("Found DICOM directory: %s", dcom_dir)
-                    target_dir = dataset_target_path / study_id
-                    if not target_dir.exists():
-                        logging.info("Creating target directory: %s", target_dir)
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                        start_time = time.time()
-                        file_count = 0
-                        for file in dcom_dir.iterdir():
-                            shutil.copy(str(file), str(target_dir))
-                            file_count += 1
-                        elapsed_time = time.time() - start_time
-                        logging.info("Moved %d files from %s to %s in %.2f seconds", file_count, dcom_dir, target_dir,
-                                     elapsed_time)
-                    else:
-                        logging.info("Target directory already exists: %s", target_dir)
+        rows = list(reader)
+
+    for row in rows:
+        study_id = row.get('id', '').strip()
+        if study_id:
+            if row.get('patology') != "0":
+                logging.info("[%d/%d] Skipping study ID: %s, pathology is not present",
+                             rows.index(row) + 1,
+                             len(rows),
+                             study_id
+                             )
+                continue
+            logging.info("[%d/%d] Processing study ID: %s", rows.index(row) + 1, len(rows), study_id)
+            dcom_dir = dicom_path / study_id / study_id
+            if dcom_dir.exists():
+                logging.info("  -  Found DICOM directory: %s", dcom_dir)
+                target_dir = dataset_target_path / study_id
+                if not target_dir.exists():
+                    logging.info("  -  Creating target directory: %s", target_dir)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    start_time = time.time()
+                    files = list(dcom_dir.iterdir())
+                    for file in files:
+                        shutil.copy(str(file), str(target_dir))
+                    elapsed_time = time.time() - start_time
+                    logging.info("  -  Moved %d files from %s to %s in %.2f seconds", len(files), dcom_dir, target_dir,
+                                 elapsed_time)
                 else:
-                    logging.warning("DICOM directory not found: %s", dcom_dir)
+                    logging.info("  -  Target directory already exists: %s", target_dir)
+            else:
+                logging.warning("  -  DICOM directory not found: %s", dcom_dir)
 
 
 def run():
