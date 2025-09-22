@@ -5,17 +5,25 @@ import logging
 import os
 import shutil
 import tarfile
+import time
 from pathlib import Path
+from dotenv import load_dotenv
 
 from chest_ct_ai_classifier.src.utils.dicom_parser import parse_dicom
-from chest_ct_ai_classifier.src.utils.metadata_extraction import analyze_dicom_series
 
 logging.basicConfig(level=logging.INFO)
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Глобальная переменная для отслеживания первой записи
 csv_initialized = False
 
-base_path = Path(os.getenv("DS_CT_LUNGCANCER_500_FILE", default=None))
+base_path = os.getenv("DS_CT_LUNGCANCER_500_FILE")
+if not base_path:
+    logging.error("DS_CT_LUNGCANCER_500_FILE environment variable is not set")
+    exit(1)
+base_path = Path(base_path)
 if not base_path.exists():
     logging.error("Directory does not exist: %s", base_path)
     exit(1)
@@ -24,6 +32,18 @@ dicom_path = base_path / "dicom"
 if not dicom_path.exists():
     logging.error("Dicom directory does not exist: %s", dicom_path)
     exit(1)
+
+dataset_target_path = os.getenv("DS_TARGET_PATH")
+if not dataset_target_path:
+    logging.error("DS_TARGET_PATH environment variable is not set")
+    exit(1)
+dataset_target_path = Path(dataset_target_path)
+if not dataset_target_path.exists():
+    logging.error("Target DS Path does not exist: %s", base_path)
+    exit(1)
+
+
+result_csv_output_file = base_path / "pathology_results.csv"
 
 def extract_archive(file):
     # If this is a file and looks like an archive, check for extracted directory
@@ -146,12 +166,9 @@ def read_existing_results(output_file):
     return existing_ids
 
 
-
-
 def collect_meta(collect_dicom_data=True, recollect=False):
     registry_file = base_path / "dataset_registry.csv"
     protocols_dir = base_path / "protocols"
-    output_file = base_path / "pathology_results.csv"
 
     if not registry_file.exists():
         logging.error("Файл реестра не найден: %s", registry_file)
@@ -201,14 +218,14 @@ def collect_meta(collect_dicom_data=True, recollect=False):
     global csv_initialized
     csv_initialized = False  # Сброс флага для очистки файла
     records_processed = 0
+    skipped_count = 0
 
     # Читаем уже существующие записи из CSV файла
     existing_study_ids = []
     if not recollect:
-        existing_study_ids = read_existing_results(output_file)
+        existing_study_ids = read_existing_results(result_csv_output_file)
         if existing_study_ids:
             csv_initialized = True
-        skipped_count = 0
 
     try:
         # Читаем файл реестра
@@ -274,23 +291,23 @@ def collect_meta(collect_dicom_data=True, recollect=False):
                                 result['hu_volume'] = ''
 
                         # Записываем результат сразу в CSV файл
-                        write_to_csv(result, output_file)
+                        write_to_csv(result, result_csv_output_file)
                         records_processed += 1
                         logging.info("Обработан файл: %s, патология: %s", study_id, pathology)
                     except Exception as e:
                         logging.error("Ошибка обработки файла %s: %s", json_file, e)
                         result = {'id': study_id, 'patology': -1}
                         # Записываем результат сразу в CSV файл
-                        write_to_csv(result, output_file)
+                        write_to_csv(result, result_csv_output_file)
                         records_processed += 1
                 else:
                     logging.warning("JSON файл не найден: %s", json_file)
                     result = {'id': study_id, 'patology': -2}
                     # Записываем результат сразу в CSV файл
-                    write_to_csv(result, output_file)
+                    write_to_csv(result, result_csv_output_file)
                     records_processed += 1
 
-        logging.info("Результаты сохранены в файл: %s", output_file)
+        logging.info("Результаты сохранены в файл: %s", result_csv_output_file)
         logging.info("Обработано новых записей: %d", records_processed)
         logging.info("Пропущено уже обработанных записей: %d", skipped_count)
         logging.info("Всего записей в существующем файле: %d", len(existing_study_ids) + records_processed)
@@ -299,18 +316,54 @@ def collect_meta(collect_dicom_data=True, recollect=False):
         logging.error("Ошибка при обработке файлов: %s", e)
 
 
+def move_dataset():
+    logging.info("Moving dataset to target path: %s", dataset_target_path)
+    # read results from result_csv_output_file, for each study_id, move dicom files to target path
+    with open(result_csv_output_file, 'r', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            study_id = row.get('id', '').strip()
+            if study_id:
+                if row.get('pathology') != "0":
+                    logging.info("Skipping study ID: %s, pathology is not present", study_id)
+                    continue
+                logging.info("Processing study ID: %s", study_id)
+                dcom_dir = dicom_path / study_id / study_id
+                if dcom_dir.exists():
+                    logging.info("Found DICOM directory: %s", dcom_dir)
+                    target_dir = dataset_target_path / study_id
+                    if not target_dir.exists():
+                        logging.info("Creating target directory: %s", target_dir)
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        start_time = time.time()
+                        file_count = 0
+                        for file in dcom_dir.iterdir():
+                            shutil.copy(str(file), str(target_dir))
+                            file_count += 1
+                        elapsed_time = time.time() - start_time
+                        logging.info("Moved %d files from %s to %s in %.2f seconds", file_count, dcom_dir, target_dir,
+                                     elapsed_time)
+                    else:
+                        logging.info("Target directory already exists: %s", target_dir)
+                else:
+                    logging.warning("DICOM directory not found: %s", dcom_dir)
+
+
 def run():
     parser = argparse.ArgumentParser(description='Process CT scan archives')
-    parser.add_argument('--extract', action='store_true', help='Extract archives')
-    parser.add_argument('--collect', action='store_true', help='Collect metadata')
-    parser.add_argument('--recollect', action='store_true', help='Recollect')
+    parser.add_argument('action', help='Action to run: extract, collect, move', choices=['extract', 'collect', 'move'])
+    parser.add_argument('--extract', help='Extract archives')
+    parser.add_argument('--collect', help='Collect metadata')
+    parser.add_argument('--recollect', help='Recollect')
 
     args = parser.parse_args()
 
-    if args.extract:
+    if args.action == 'extract':
         extract_all()
-    elif args.collect:
+    elif args.action == 'collect':
         collect_meta()
+    elif args.action == 'move':
+        move_dataset()
     else:
         parser.print_help()
 
