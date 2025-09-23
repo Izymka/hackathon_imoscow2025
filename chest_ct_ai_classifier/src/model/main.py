@@ -5,7 +5,7 @@ from lightning_module import MedicalClassificationModel
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from config import ModelConfig
 from omegaconf import OmegaConf
 import torch
@@ -65,7 +65,8 @@ def main():
         batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=cfg_namespace.pin_memory
+        pin_memory=cfg_namespace.pin_memory,
+        persistent_workers=num_workers > 0  # включаем только если есть workers
     )
     val_dataset = MedicalTensorDataset(cfg.val_data_root, cfg.val_list, cfg_namespace)
 
@@ -74,17 +75,21 @@ def main():
         batch_size=cfg.batch_size,
         shuffle=False,  # Валидация не требует перемешивания
         num_workers=num_workers,
-        pin_memory=cfg_namespace.pin_memory
+        pin_memory=cfg_namespace.pin_memory,
+        persistent_workers=num_workers > 0  # включаем только если есть workers
     )
 
-    # Logger & Checkpointing
-    logger = TensorBoardLogger("tb_logs", name="medical_classification")
+    # Logger & Checkpointing - добавляем несколько логгеров
+    tb_logger = TensorBoardLogger("tb_logs", name="medical_classification")
+    csv_logger = CSVLogger("logs", name="medical_classification")
+    
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.save_folder,
-        filename="{epoch}-{train_loss:.2f}",
+        filename="{epoch}-{val_acc:.3f}-{val_f1:.3f}",  # обновили формат имени
         save_top_k=3,
-        monitor="train_loss",
-        mode="min"
+        monitor="val_f1",  # мониторим F1 вместо train_loss
+        mode="max",  # максимизируем F1
+        save_weights_only=True
     )
 
     # Trainer - правильно настраиваем accelerator и devices
@@ -97,12 +102,14 @@ def main():
 
     trainer = pl.Trainer(
         max_epochs=cfg.n_epochs,
-        logger=logger,
+        logger=[tb_logger, csv_logger],  # используем список логгеров
         callbacks=[checkpoint_callback],
         accelerator=accelerator,
-        devices=devices,  # исправлено
+        devices=devices,
         fast_dev_run=cfg.ci_test,
-        log_every_n_steps=1
+        log_every_n_steps=1,
+        enable_progress_bar=True,  # явно включаем прогресс-бар
+        enable_model_summary=True  # включаем summary модели
     )
 
     # Train
