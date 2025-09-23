@@ -11,8 +11,8 @@ class ModelConfig:
     resnet_shortcut: str = "B"
 
     # Input dimensions
-    input_W: int = 160
-    input_H: int = 160
+    input_W: int = 128
+    input_H: int = 128
     input_D: int = 128
 
     # Classes
@@ -28,8 +28,10 @@ class ModelConfig:
     # Paths
     data_root: str = "data/train/tensors"
     img_list: str = "data/train/labels.csv"
-    pretrain_path: str = "MedicalNet/pretrain/resnet_18.pth"
-    save_folder: str = "../outputs/checkpoints"
+    pretrain_path: str = "model/pretrain/resnet_10_23dataset.pth"
+    save_folder: str = "model/outputs/checkpoints"
+    val_list: str = "data/train/val_labels.csv"
+    val_data_root: str = "data/train/tensors"  # может совпадать с data_root
 
     # Model layers
     new_layer_names: List[str] = None

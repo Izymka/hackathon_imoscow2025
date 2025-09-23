@@ -1,4 +1,4 @@
-# MedicalNet/test_model.py
+# model/test_model.py
 import torch
 import os
 from torch.utils.data import DataLoader

@@ -3,7 +3,7 @@
 prepare_ct_for_medicalnet.py
 
 Использование вашего старого, рабочего DICOM-загрузчика + MONAI-трансформаций.
-Возвращает тензоры [1, 1, 128, 128, 128] для MedicalNet с учётом реального размера вокселя.
+Возвращает тензоры [1, 1, 128, 128, 128] для model с учётом реального размера вокселя.
 """
 
 import os
@@ -166,7 +166,7 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
         # Применяем MONAI трансформации с учётом_spacing
         transform = get_transforms()
         tensor = transform(ct_meta_tensor)  # результат: [1, 128, 128, 128]
-        tensor = tensor.unsqueeze(0)  # → [1, 1, 128, 128, 128] для MedicalNet
+        tensor = tensor.unsqueeze(0)  # → [1, 1, 128, 128, 128] для model
 
         # Проверяем финальную форму
         if tensor.shape != (1, 1, 128, 128, 128):
@@ -198,7 +198,7 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
 # -------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare DICOM CT volumes for MedicalNet with real voxel size consideration")
+        description="Prepare DICOM CT volumes for model with real voxel size consideration")
     parser.add_argument("--input", type=str, required=True,
                         help="Path to folder with patient subfolders (each with DICOM series)")
     parser.add_argument("--output", type=str, required=True,

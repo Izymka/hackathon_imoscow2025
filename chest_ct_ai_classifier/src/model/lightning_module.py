@@ -27,11 +27,18 @@ class MedicalClassificationModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         volumes, labels = batch
-        outputs = self(volumes)
+        outputs = self(volumes)  # forward pass
         loss = self.criterion(outputs, labels)
-        acc = self.accuracy(outputs, labels)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_acc", acc, on_step=False, on_epoch=True, prog_bar=True)
+
+        # Логируем метрики
+        self.log('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+
+        # Если вы используете accuracy
+        preds = torch.argmax(outputs, dim=1)
+        acc = self.accuracy(preds, labels)
+        self.log('val_acc', acc, on_step=False, on_epoch=True, prog_bar=True)
+
+        return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.SGD(self.parameters(), lr=self.learning_rate, momentum=0.9, weight_decay=1e-3)

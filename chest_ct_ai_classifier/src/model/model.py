@@ -87,9 +87,9 @@ def generate_model(opt):
         print('loading pretrained model {}'.format(opt.pretrain_path))
         # Исправленная загрузка для CPU/GPU совместимости
         if opt.no_cuda or not torch.cuda.is_available():
-            pretrain = torch.load(opt.pretrain_path, map_location=torch.device('cpu'))
+            pretrain = torch.load(opt.pretrain_path, weights_only=True, map_location=torch.device('cpu'))
         else:
-            pretrain = torch.load(opt.pretrain_path)
+            pretrain = torch.load(opt.pretrain_path, weights_only=True)
 
         pretrain_dict = {k: v for k, v in pretrain['state_dict'].items() if k in net_dict.keys()}
 

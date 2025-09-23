@@ -29,7 +29,7 @@ def main():
         cfg.no_cuda = True
         cfg.data_root = '../toy_data'
         cfg.pretrain_path = ''
-        cfg.num_workers = 0
+        cfg.num_workers = 4
         cfg.model_depth = 10
         cfg.resnet_shortcut = 'A'
         cfg.input_D = 14
@@ -58,12 +58,21 @@ def main():
     train_dataset = MedicalTensorDataset(cfg.data_root, cfg.img_list, cfg_namespace)
 
     # Уменьшаем num_workers для избежания проблем с pickle
-    num_workers = 0 if cfg.ci_test else 0  # временно 0 для стабильности
+    num_workers = 0 if cfg.ci_test else 4  # временно 0 для стабильности
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=True,
+        num_workers=num_workers,
+        pin_memory=cfg_namespace.pin_memory
+    )
+    val_dataset = MedicalTensorDataset(cfg.val_data_root, cfg.val_list, cfg_namespace)
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=cfg.batch_size,
+        shuffle=False,  # Валидация не требует перемешивания
         num_workers=num_workers,
         pin_memory=cfg_namespace.pin_memory
     )
@@ -92,11 +101,16 @@ def main():
         callbacks=[checkpoint_callback],
         accelerator=accelerator,
         devices=devices,  # исправлено
-        fast_dev_run=cfg.ci_test
+        fast_dev_run=cfg.ci_test,
+        log_every_n_steps=1
     )
 
     # Train
-    trainer.fit(lightning_model, train_dataloaders=train_loader)
+    trainer.fit(
+        lightning_model,
+        train_dataloaders=train_loader,
+        val_dataloaders=val_loader  #
+    )
 
 
 if __name__ == '__main__':

@@ -36,7 +36,7 @@ class CTTensorQualityAssessment:
         """
         Args:
             expected_shape: Ожидаемая форма тензора (batch, channels, depth, height, width)
-                           Для MedicalNet: (1, 1, 128, 128, 128)
+                           Для model: (1, 1, 128, 128, 128)
         """
         self.expected_shape = expected_shape
         self.supported_formats = ['.pt', '.pth', '.npy', '.npz']
@@ -97,7 +97,7 @@ class CTTensorQualityAssessment:
     def load_tensors_from_directory(self, directory_path: str,
                                     pattern: str = "*",
                                     max_files: Optional[int] = None,
-                                    num_workers: int = 4) -> List[Tuple[torch.Tensor, str]]:
+                                    num_workers: int = 10) -> List[Tuple[torch.Tensor, str]]:
         """
         Загрузка всех тензоров из директории с параллелизмом
 
@@ -184,7 +184,7 @@ class CTTensorQualityAssessment:
     def assess_tensor_quality(self, tensor: torch.Tensor,
                               tensor_name: str = "CT_tensor") -> Dict:
         """
-        Полная оценка качества нормализованного тензора для MedicalNet
+        Полная оценка качества нормализованного тензора для model
 
         Args:
             tensor: Входной нормализованный тензор КТ снимка
@@ -207,7 +207,7 @@ class CTTensorQualityAssessment:
         # Анализ пространственного распределения
         spatial_analysis = self._spatial_analysis(tensor)
 
-        # Проверка готовности для модели MedicalNet
+        # Проверка готовности для модели model
         model_readiness = self._model_readiness_check(tensor)
 
         # Объединение всех метрик
@@ -273,7 +273,7 @@ class CTTensorQualityAssessment:
         else:
             tensor_float = tensor
 
-        # Анализ для канала (для MedicalNet это один канал)
+        # Анализ для канала (для model это один канал)
         if len(tensor_float.shape) == 5:  # [batch, channels, depth, height, width]
             channel_data = tensor_float[0, 0]  # первый batch, первый канал
         else:
@@ -444,15 +444,15 @@ class CTTensorQualityAssessment:
         return metrics
 
     def _model_readiness_check(self, tensor: torch.Tensor) -> Dict:
-        """Проверка готовности для подачи в MedicalNet"""
+        """Проверка готовности для подачи в model"""
         checks = {}
 
-        # Проверка совместимости с MedicalNet
+        # Проверка совместимости с model
         checks['shape_correct'] = tensor.shape == self.expected_shape
         checks['batch_size_ok'] = tensor.shape[0] >= 1
         checks['spatial_dims_ok'] = len(tensor.shape) == 5
 
-        # Проверка минимальных размеров (для MedicalNet это 128x128x128)
+        # Проверка минимальных размеров (для model это 128x128x128)
         if len(tensor.shape) == 5:
             checks['min_size_ok'] = all(s >= 32 for s in tensor.shape[2:])  # Минимальный размер для 3D CNN
         else:
@@ -467,9 +467,9 @@ class CTTensorQualityAssessment:
 
         # Проверка памяти для модели (примерная оценка)
         model_memory_estimate = tensor.numel() * 4 * 5 / (1024 ** 3)  # Примерно 5x для forward pass
-        checks['memory_feasible'] = model_memory_estimate < 4  # < 4GB для MedicalNet
+        checks['memory_feasible'] = model_memory_estimate < 4  # < 4GB для model
 
-        logger.info("Готовность для MedicalNet:")
+        logger.info("Готовность для model:")
         logger.info(f"Правильная форма: {'✓' if checks['shape_correct'] else '✗'}")
         logger.info(f"Размер batch: {'✓' if checks['batch_size_ok'] else '✗'}")
         logger.info(f"Пространственные размеры: {'✓' if checks['spatial_dims_ok'] else '✗'}")
@@ -605,7 +605,7 @@ class CTTensorQualityAssessment:
     def visualize_tensor(self, tensor: torch.Tensor,
                          slice_indices: Optional[List[int]] = None,
                          save_path: Optional[str] = None):
-        """Визуализация срезов тензора для MedicalNet"""
+        """Визуализация срезов тензора для model"""
 
         # Извлекаем данные для визуализации
         if len(tensor.shape) == 5:  # [batch, channels, depth, height, width]
@@ -722,7 +722,7 @@ def main():
     """Основная функция для командной строки"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Оценка качества тензоров для MedicalNet")
+    parser = argparse.ArgumentParser(description="Оценка качества тензоров для model")
     parser.add_argument("--input", type=str, required=True,
                         help="Путь к файлу или директории с тензорами")
     parser.add_argument("--expected-shape", type=int, nargs=5,
