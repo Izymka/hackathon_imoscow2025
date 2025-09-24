@@ -50,6 +50,10 @@ class ModelConfig:
 
     # Model layers
     new_layer_names: List[str] = None
+    
+    # Fine-tuning parameters
+    base_lr_multiplier: float = 1.0  # множитель для базового learning rate
+    new_layers_lr_multiplier: float = 10.0  # множитель для новых/размороженных слоев
 
     # System settings
     no_cuda: bool = False
@@ -76,20 +80,7 @@ class ModelConfig:
 
     def __post_init__(self):
         if self.new_layer_names is None:
-            self.new_layer_names = ["fc"]
+            # Размораживаем последний блок ResNet (layer4) и полносвязный слой
+            self.new_layer_names = ["fc", "layer4"]
 
-        if self.additional_metrics is None:
-            self.additional_metrics = [
-                "val_accuracy",
-                "val_recall",
-                "val_precision",
-                "val_auroc"
-            ]
-
-        if self.secondary_metrics is None:
-            self.secondary_metrics = [
-                "val_accuracy",
-                "val_recall",
-                "val_precision",
-                "val_auroc"
-            ]
+        # ... existing code ...

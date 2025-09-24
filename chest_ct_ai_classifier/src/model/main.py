@@ -78,7 +78,7 @@ def main():
     lightning_model = MedicalClassificationModel(
         model,
         learning_rate=cfg.learning_rate,
-        #num_classes=cfg.n_seg_classes
+        # num_classes=cfg.n_seg_classes
     )
 
     # === Создаем аугментации ===
@@ -206,21 +206,21 @@ def main():
 def test_inference_example():
     """Пример использования inference класса для тестирования"""
     print("\n🔬 Тестирование inference класса...")
-    
+
     # Создаем тестовый тензор
     test_tensor = torch.randn(1, 1, 128, 128, 128)
     print(f"Тестовый тензор: {test_tensor.shape}")
-    
+
     # Создаем inference объект
     inference = MedicalModelInference(
         weights_path="model/outputs/checkpoints/best_weights.pth",
         model_config=ModelConfig()
     )
-    
+
     # Делаем предсказание
     prediction = inference.predict(test_tensor)
     print(f"Результат предсказания: {prediction}")
-    
+
     # Пакетное предсказание
     batch_tensor = torch.randn(3, 1, 128, 128, 128)
     batch_predictions = inference.predict_batch(batch_tensor)
@@ -229,7 +229,7 @@ def test_inference_example():
 
 if __name__ == '__main__':
     import sys
-    
+
     if len(sys.argv) > 1 and sys.argv[1] == "--test-inference":
         test_inference_example()
     else:
