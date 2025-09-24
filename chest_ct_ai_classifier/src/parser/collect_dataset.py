@@ -1,6 +1,7 @@
 import argparse
 import csv
 import logging
+import os
 import shutil
 import tarfile
 import time
@@ -10,6 +11,11 @@ from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
+
+USE_ROBOCOPY = os.name == 'nt'
+if USE_ROBOCOPY:
+    import subprocess
+    check_network = subprocess.run(['net', 'use'], capture_output=True, text=True)
 
 
 def extract_archive(file, dicom_path):
@@ -113,17 +119,25 @@ def run():
         rows = list(csvfile)
 
     def move_dicom_files(dicom_series_path, target_dir):
+        dicom_series_path = Path(os.path.normpath(str(dicom_series_path)))
         start_time = time.time()
-        files = list(dicom_series_path.iterdir())
-        for file in files:
-            if file.is_dir():
-                if len(files) > 1:
-                    logging.error("  🙅🚫⛔  Found %d series folders in: %s", len(files), dcom_dir)
-                    return False
-                return move_dicom_files(file, target_dir)
-            shutil.copy(str(file), str(target_dir))
+        dirs = [f for f in dicom_series_path.iterdir() if f.is_dir()]
+        if dirs:
+            if len(dirs) > 1:
+                logging.warning("  🙅 Found %d series folders in: %s. Skipping", len(dirs), dicom_series_path)
+                return False
+            return move_dicom_files(dirs[0], target_dir)
+        files = [f for f in dicom_series_path.iterdir() if not f.name.startswith('.')]
+        if not files:
+            logging.error("  🚫 No files found in: %s", dicom_series_path)
+        if USE_ROBOCOPY:
+            subprocess.run(['robocopy', str(dicom_series_path), str(target_dir)],
+                           capture_output=True)
+        else:
+            for file in files:
+                shutil.copy(str(file), str(target_dir))
         elapsed_time = time.time() - start_time
-        logging.info("  🚀  Moved %d files from %s to %s in %.2f seconds", len(files), dcom_dir, target_dir,
+        logging.info("  🚀  Moved %d files from %s to %s in %.2f seconds", len(files), dicom_series_path, target_dir,
                      elapsed_time)
         return True
 
