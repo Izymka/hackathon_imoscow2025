@@ -75,7 +75,7 @@ def main():
     lightning_model = MedicalClassificationModel(
         model,
         learning_rate=cfg.learning_rate,
-        num_classes=cfg.n_seg_classes
+        #num_classes=cfg.n_seg_classes
     )
 
     # === Создаем аугментации ===

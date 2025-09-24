@@ -19,11 +19,11 @@ class ModelConfig:
     n_seg_classes: int = 2  # для бинарной классификации остается 2
 
     # Training parameters
-    batch_size: int = 4
+    batch_size: int = 8
     learning_rate: float = 0.0001
     n_epochs: int = 150
     save_intervals: int = 100
-    num_workers: int = 4
+    num_workers: int = 8
 
     # Early stopping parameters
     early_stopping_patience: int = 30  # эпох без улучшения до остановки

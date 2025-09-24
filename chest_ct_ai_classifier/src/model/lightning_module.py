@@ -11,7 +11,7 @@ from torchmetrics.classification import (
 )
 
 
-class MedicalBinaryClassificationModel(pl.LightningModule):
+class MedicalClassificationModel(pl.LightningModule):
     def __init__(self, model, learning_rate=1e-3):
         super().__init__()
         self.model = model
@@ -20,14 +20,14 @@ class MedicalBinaryClassificationModel(pl.LightningModule):
 
         # Метрики для бинарной классификации
         self.val_accuracy = BinaryAccuracy()
-        self.val_f1 = BinaryF1Score(average='macro')  # f1_macro для бинарной классификации
-        self.val_recall = BinaryRecall(average='macro')
-        self.val_precision = BinaryPrecision(average='macro')
+        self.val_f1 = BinaryF1Score()  # f1_macro для бинарной классификации
+        self.val_recall = BinaryRecall()
+        self.val_precision = BinaryPrecision()
         self.val_auroc = BinaryAUROC()
 
         # Метрики для обучения
         self.train_accuracy = BinaryAccuracy()
-        self.train_f1 = BinaryF1Score(average='macro')
+        self.train_f1 = BinaryF1Score()
 
         # Для накопления val_loss
         self.validation_step_outputs = []
