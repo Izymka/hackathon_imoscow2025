@@ -6,7 +6,8 @@ import numpy as np
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
-from monai.metrics import compute_roc_auc, compute_confusion_matrix
+from monai.metrics import compute_roc_auc
+from monai.metrics import ConfusionMatrixMetric
 import os
 from tqdm import tqdm
 
