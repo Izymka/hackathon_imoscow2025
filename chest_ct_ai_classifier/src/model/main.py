@@ -1,6 +1,6 @@
 # main.py
 from datasets.medical_tensors import MedicalTensorDataset
-from model import generate_model
+from model_generator import generate_model
 from lightning_module import MedicalClassificationModel
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
@@ -13,6 +13,9 @@ import argparse
 
 # === Импортируем MONAI аугментации ===
 from monai.transforms import Compose, RandFlip, RandRotate90, RandGaussianNoise
+
+# === Импортируем inference класс ===
+from inference import MedicalModelInference
 
 
 def get_train_transforms():
@@ -192,8 +195,7 @@ def main():
         best_model = MedicalClassificationModel.load_from_checkpoint(
             best_checkpoint_path,
             model=model,
-            learning_rate=cfg.learning_rate,
-            num_classes=cfg.n_seg_classes
+            learning_rate=cfg.learning_rate
         )
 
         # Сохраняем только веса модели (state_dict)
@@ -201,5 +203,34 @@ def main():
         print(f"Лучшие веса сохранены в: {cfg.save_folder}/best_weights.pth")
 
 
+def test_inference_example():
+    """Пример использования inference класса для тестирования"""
+    print("\n🔬 Тестирование inference класса...")
+    
+    # Создаем тестовый тензор
+    test_tensor = torch.randn(1, 1, 128, 128, 128)
+    print(f"Тестовый тензор: {test_tensor.shape}")
+    
+    # Создаем inference объект
+    inference = MedicalModelInference(
+        weights_path="model/outputs/checkpoints/best_weights.pth",
+        model_config=ModelConfig()
+    )
+    
+    # Делаем предсказание
+    prediction = inference.predict(test_tensor)
+    print(f"Результат предсказания: {prediction}")
+    
+    # Пакетное предсказание
+    batch_tensor = torch.randn(3, 1, 128, 128, 128)
+    batch_predictions = inference.predict_batch(batch_tensor)
+    print(f"Пакетные предсказания: {batch_predictions}")
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--test-inference":
+        test_inference_example()
+    else:
+        main()

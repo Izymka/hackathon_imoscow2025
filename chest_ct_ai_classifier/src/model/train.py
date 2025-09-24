@@ -1,6 +1,6 @@
 from setting import parse_opts 
 from datasets.medical_tensors import MedicalTensorDataset
-from model import generate_model
+from model_generator import generate_model
 import torch
 import numpy as np
 from torch import nn
