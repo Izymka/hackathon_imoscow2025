@@ -19,19 +19,34 @@ class ModelConfig:
     n_seg_classes: int = 2
 
     # Training parameters
-    batch_size: int = 2
+    batch_size: int = 4
     learning_rate: float = 0.0001
-    n_epochs: int = 50
+    n_epochs: int = 150
     save_intervals: int = 100
     num_workers: int = 4
 
+    # Early stopping parameters
+    early_stopping_patience: int = 30  # эпох без улучшения до остановки
+    early_stopping_min_delta: float = 0.0005  # минимальное улучшение для продолжения
+    early_stopping_metric: str = "val_f1"  # метрика для мониторинга
+
+    # Learning rate scheduler
+    lr_scheduler_patience: int = 5  # эпох без улучшения до уменьшения LR
+    lr_scheduler_factor: float = 0.5  # множитель уменьшения LR
+    lr_scheduler_min_lr: float = 1e-7  # минимальный learning rate
+
+    # Checkpoint parameters
+    save_top_k: int = 5  # количество лучших чекпоинтов для сохранения
+    monitor_metric: str = "val_f1"  # метрика для мониторинга чекпоинтов
+    checkpoint_mode: str = "max"  # "max" для метрик, которые нужно максимизировать
+
     # Paths
-    data_root: str = "data/train/tensors"
+    data_root: str = "data/train"
     img_list: str = "data/train/labels.csv"
-    pretrain_path: str = "model/pretrain/resnet_10_23dataset.pth"
+    pretrain_path: str = "model/pretrain/resnet_34_23dataset.pth"
     save_folder: str = "model/outputs/checkpoints"
-    val_list: str = "data/train/val_labels.csv"
-    val_data_root: str = "data/train/tensors"  # может совпадать с data_root
+    val_list: str = "data/test/labels.csv"
+    val_data_root: str = "data/test"  # может совпадать с data_root
 
     # Model layers
     new_layer_names: List[str] = None
@@ -41,6 +56,10 @@ class ModelConfig:
     manual_seed: int = 1
     ci_test: bool = False
     pin_memory: bool = True
+    
+    # Training stability
+    gradient_clip_val: float = 1.0  # значение для градиентного обрезания
+    deterministic: bool = False  # для воспроизводимости
 
     def __post_init__(self):
         if self.new_layer_names is None:

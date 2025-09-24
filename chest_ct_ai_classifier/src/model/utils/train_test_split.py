@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import shutil
+from pathlib import Path
 
 
 def split_dataset(data_dir='data', train_ratio=0.7, random_state=42):
@@ -18,17 +19,16 @@ def split_dataset(data_dir='data', train_ratio=0.7, random_state=42):
     # Создаем необходимые директории
     train_dir = os.path.join(data_dir, 'train')
     test_dir = os.path.join(data_dir, 'test')
-    tensors_dir = os.path.join(data_dir, 'tensors')
+    tensors_dir = os.path.join(data_dir, 'processed')
 
     os.makedirs(train_dir, exist_ok=True)
     os.makedirs(test_dir, exist_ok=True)
-    os.makedirs(os.path.join(train_dir, 'tensors'), exist_ok=True)
-    os.makedirs(os.path.join(test_dir, 'tensors'), exist_ok=True)
+    
 
     # Читаем метки
-    labels_path = os.path.join(data_dir, 'labels.csv')
+    labels_path = Path(data_dir) / "processed" / "labels.csv"
     df = pd.read_csv(labels_path)
-
+    print(df.columns)
     # Преобразуем label в int для корректной стратификации
     df['label'] = df['label'].astype(int)
 
@@ -43,7 +43,7 @@ def split_dataset(data_dir='data', train_ratio=0.7, random_state=42):
     # Копируем тренировочные файлы
     for _, row in train_df.iterrows():
         src_path = os.path.join(tensors_dir, row['filename'])
-        dst_path = os.path.join(train_dir, 'tensors', row['filename'])
+        dst_path = os.path.join(train_dir, row['filename'])
         if os.path.exists(src_path):
             shutil.copy2(src_path, dst_path)
         else:
@@ -52,7 +52,7 @@ def split_dataset(data_dir='data', train_ratio=0.7, random_state=42):
     # Копируем тестовые файлы
     for _, row in test_df.iterrows():
         src_path = os.path.join(tensors_dir, row['filename'])
-        dst_path = os.path.join(test_dir, 'tensors', row['filename'])
+        dst_path = os.path.join(test_dir, row['filename'])
         if os.path.exists(src_path):
             shutil.copy2(src_path, dst_path)
         else:

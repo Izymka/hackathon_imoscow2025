@@ -4,7 +4,7 @@ from model import generate_model
 from lightning_module import MedicalClassificationModel
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from config import ModelConfig
 from omegaconf import OmegaConf
@@ -51,8 +51,15 @@ def main():
     # Используем argparse.Namespace
     cfg_namespace = argparse.Namespace(**cfg_dict)
 
+    # УСТАНОВИТЬ НЕДЕТЕРМИНИРОВАННОСТЬ ПЕРЕД СОЗДАНИЕМ МОДЕЛИ
+    torch.use_deterministic_algorithms(False)
+    
     model, parameters = generate_model(cfg_namespace)
-    lightning_model = MedicalClassificationModel(model, cfg.learning_rate)
+    lightning_model = MedicalClassificationModel(
+        model, 
+        learning_rate=cfg.learning_rate, 
+        num_classes=cfg.n_seg_classes
+    )
 
     # Создаем датасет
     train_dataset = MedicalTensorDataset(cfg.data_root, cfg.img_list, cfg_namespace)
@@ -66,58 +73,101 @@ def main():
         shuffle=True,
         num_workers=num_workers,
         pin_memory=cfg_namespace.pin_memory,
-        persistent_workers=num_workers > 0  # включаем только если есть workers
+        persistent_workers=num_workers > 0
     )
+    
     val_dataset = MedicalTensorDataset(cfg.val_data_root, cfg.val_list, cfg_namespace)
-
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg.batch_size,
-        shuffle=False,  # Валидация не требует перемешивания
+        shuffle=False,
         num_workers=num_workers,
         pin_memory=cfg_namespace.pin_memory,
-        persistent_workers=num_workers > 0  # включаем только если есть workers
+        persistent_workers=num_workers > 0
     )
 
-    # Logger & Checkpointing - добавляем несколько логгеров
+    # Logger & Checkpointing
     tb_logger = TensorBoardLogger("tb_logs", name="medical_classification")
     csv_logger = CSVLogger("logs", name="medical_classification")
     
-    checkpoint_callback = ModelCheckpoint(
+    # Callback для сохранения лучших весов
+    best_model_checkpoint = ModelCheckpoint(
         dirpath=cfg.save_folder,
-        filename="{epoch}-{val_acc:.3f}-{val_f1:.3f}",  # обновили формат имени
-        save_top_k=3,
-        monitor="val_f1",  # мониторим F1 вместо train_loss
-        mode="max",  # максимизируем F1
-        save_weights_only=True
+        filename="best-checkpoint-{epoch:02d}-{val_acc:.3f}-{val_f1:.3f}",
+        save_top_k=cfg.save_top_k,
+        monitor=cfg.monitor_metric,
+        mode=cfg.checkpoint_mode,
+        save_weights_only=True,
+        verbose=True
     )
+    
+    # Callback для сохранения последнего чекпоинта
+    last_model_checkpoint = ModelCheckpoint(
+        dirpath=cfg.save_folder,
+        filename="last-checkpoint-{epoch:02d}-{val_acc:.3f}-{val_f1:.3f}",
+        save_top_k=1,
+        monitor=None,
+        save_weights_only=True,
+        verbose=True
+    )
+    
+    # Callback для ранней остановки
+    early_stopping = EarlyStopping(
+        monitor=cfg.early_stopping_metric,
+        min_delta=cfg.early_stopping_min_delta,
+        patience=cfg.early_stopping_patience,
+        verbose=True,
+        mode=cfg.checkpoint_mode
+    )
+    
+    # Callback для мониторинга learning rate
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
 
     # Trainer - правильно настраиваем accelerator и devices
     if cfg.no_cuda or not torch.cuda.is_available():
         accelerator = "cpu"
-        devices = 1  # для CPU devices должно быть int > 0
+        devices = 1
     else:
         accelerator = "gpu"
         devices = 1
 
     trainer = pl.Trainer(
         max_epochs=cfg.n_epochs,
-        logger=[tb_logger, csv_logger],  # используем список логгеров
-        callbacks=[checkpoint_callback],
+        logger=[tb_logger, csv_logger],
+        callbacks=[best_model_checkpoint, last_model_checkpoint, early_stopping, lr_monitor],
         accelerator=accelerator,
         devices=devices,
         fast_dev_run=cfg.ci_test,
         log_every_n_steps=1,
-        enable_progress_bar=True,  # явно включаем прогресс-бар
-        enable_model_summary=True  # включаем summary модели
+        enable_progress_bar=True,
+        enable_model_summary=True,
+        # deterministic=cfg.deterministic,  # ПОЛНОСТЬЮ УБРАТЬ ЭТУ СТРОКУ
+        gradient_clip_val=cfg.gradient_clip_val,
     )
 
     # Train
     trainer.fit(
         lightning_model,
         train_dataloaders=train_loader,
-        val_dataloaders=val_loader  #
+        val_dataloaders=val_loader
     )
+    
+    # После обучения загружаем лучшую модель и сохраняем только веса
+    best_checkpoint_path = best_model_checkpoint.best_model_path
+    if best_checkpoint_path:
+        print(f"Загружаем лучшую модель из: {best_checkpoint_path}")
+        
+        # Загружаем модель с лучшими весами
+        best_model = MedicalClassificationModel.load_from_checkpoint(
+            best_checkpoint_path,
+            model=model,
+            learning_rate=cfg.learning_rate,
+            num_classes=cfg.n_seg_classes
+        )
+        
+        # Сохраняем только веса модели (state_dict)
+        torch.save(best_model.model.state_dict(), f"{cfg.save_folder}/best_weights.pth")
+        print(f"Лучшие веса сохранены в: {cfg.save_folder}/best_weights.pth")
 
 
 if __name__ == '__main__':

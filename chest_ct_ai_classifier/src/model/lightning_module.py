@@ -1,4 +1,4 @@
-# lightning_module.py
+# lightning_module.py (улучшенная версия вашего кода)
 import torch
 from torch import nn
 import pytorch_lightning as pl
@@ -23,6 +23,10 @@ class MedicalClassificationModel(pl.LightningModule):
         self.val_recall = MulticlassRecall(num_classes=num_classes)
         self.val_precision = MulticlassPrecision(num_classes=num_classes)
 
+        # Метрики для обучения (опционально, для более полной картины)
+        self.train_accuracy = MulticlassAccuracy(num_classes=num_classes)
+        self.train_f1 = MulticlassF1Score(num_classes=num_classes)
+
         # Для накопления val_loss
         self.validation_step_outputs = []
         
@@ -37,8 +41,25 @@ class MedicalClassificationModel(pl.LightningModule):
         outputs = self(volumes)
         loss = self.criterion(outputs, labels)
 
+        # Вычисляем и логируем метрики на тренировке
+        train_preds = torch.argmax(outputs, dim=1)
+        self.train_accuracy.update(train_preds, labels)
+        self.train_f1.update(train_preds, labels)
+
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
+
+    def on_train_epoch_end(self):
+        # Логируем метрики обучения в конце эпохи
+        train_acc = self.train_accuracy.compute()
+        train_f1 = self.train_f1.compute()
+        
+        self.log('train_acc', train_acc, on_epoch=True, prog_bar=True, logger=True)
+        self.log('train_f1', train_f1, on_epoch=True, prog_bar=True, logger=True)
+        
+        # Сбрасываем метрики обучения
+        self.train_accuracy.reset()
+        self.train_f1.reset()
 
     def validation_step(self, batch, batch_idx):
         volumes, labels = batch
@@ -93,4 +114,19 @@ class MedicalClassificationModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-        return optimizer
+        # Добавляем scheduler с мониторингом val_f1
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 
+            mode='max',  # максимизируем F1
+            factor=0.5, 
+            patience=5, 
+            verbose=True
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'monitor': 'val_f1',  # мониторим val_f1 для изменения lr
+                'interval': 'epoch'
+            }
+        }
