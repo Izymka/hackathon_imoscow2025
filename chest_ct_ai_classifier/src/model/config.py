@@ -7,8 +7,8 @@ from typing import List, Optional
 class ModelConfig:
     # Model architecture
     model: str = "resnet"
-    model_depth: int = 10
-    resnet_shortcut: str = "B"
+    model_depth: int = 34
+    resnet_shortcut: str = "A"
 
     # Input dimensions
     input_W: int = 128
@@ -16,7 +16,7 @@ class ModelConfig:
     input_D: int = 128
 
     # Classes
-    n_seg_classes: int = 2
+    n_seg_classes: int = 2  # для бинарной классификации остается 2
 
     # Training parameters
     batch_size: int = 4
@@ -28,7 +28,7 @@ class ModelConfig:
     # Early stopping parameters
     early_stopping_patience: int = 30  # эпох без улучшения до остановки
     early_stopping_min_delta: float = 0.0005  # минимальное улучшение для продолжения
-    early_stopping_metric: str = "val_f1"  # метрика для мониторинга
+    early_stopping_metric: str = "val_f1"  # метрика для мониторинга - f1_macro
 
     # Learning rate scheduler
     lr_scheduler_patience: int = 5  # эпох без улучшения до уменьшения LR
@@ -37,7 +37,7 @@ class ModelConfig:
 
     # Checkpoint parameters
     save_top_k: int = 5  # количество лучших чекпоинтов для сохранения
-    monitor_metric: str = "val_f1"  # метрика для мониторинга чекпоинтов
+    monitor_metric: str = "val_f1"  # метрика для мониторинга чекпоинтов - f1_macro
     checkpoint_mode: str = "max"  # "max" для метрик, которые нужно максимизировать
 
     # Paths
@@ -56,11 +56,40 @@ class ModelConfig:
     manual_seed: int = 1
     ci_test: bool = False
     pin_memory: bool = True
-    
+
     # Training stability
     gradient_clip_val: float = 1.0  # значение для градиентного обрезания
     deterministic: bool = False  # для воспроизводимости
 
+    # Cross-validation parameters
+    n_splits: int = 5  # количество фолдов для кросс-валидации
+    cv_random_state: int = 42  # для воспроизводимости в кросс-валидации
+
+    # Binary classification specific parameters
+    binary_classification: bool = True  # флаг для бинарной классификации
+    use_f1_macro: bool = True  # использовать f1_macro вместо f1_micro
+    additional_metrics: List[str] = None  # дополнительные метрики для логгирования
+
+    # Validation metrics for binary classification
+    primary_metric: str = "val_f1"  # основная метрика для мониторинга
+    secondary_metrics: List[str] = None  # дополнительные метрики для отслеживания
+
     def __post_init__(self):
         if self.new_layer_names is None:
             self.new_layer_names = ["fc"]
+
+        if self.additional_metrics is None:
+            self.additional_metrics = [
+                "val_accuracy",
+                "val_recall",
+                "val_precision",
+                "val_auroc"
+            ]
+
+        if self.secondary_metrics is None:
+            self.secondary_metrics = [
+                "val_accuracy",
+                "val_recall",
+                "val_precision",
+                "val_auroc"
+            ]

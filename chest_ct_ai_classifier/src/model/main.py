@@ -11,6 +11,23 @@ from omegaconf import OmegaConf
 import torch
 import argparse
 
+# === Импортируем MONAI аугментации ===
+from monai.transforms import Compose, RandFlip, RandRotate90, RandGaussianNoise
+
+
+def get_train_transforms():
+    """Безопасные аугментации для тренировочной выборки."""
+    return Compose([
+        RandFlip(prob=0.5, spatial_axis=0),
+        RandRotate90(prob=0.5, max_k=1, spatial_axes=(1, 2)),
+        RandGaussianNoise(prob=0.25, std=0.01),
+    ])
+
+
+def get_val_transforms():
+    """Аугментации для валидации (обычно нет)."""
+    return None
+
 
 def main():
     # Создаем конфиг по умолчанию
@@ -53,16 +70,25 @@ def main():
 
     # УСТАНОВИТЬ НЕДЕТЕРМИНИРОВАННОСТЬ ПЕРЕД СОЗДАНИЕМ МОДЕЛИ
     torch.use_deterministic_algorithms(False)
-    
+
     model, parameters = generate_model(cfg_namespace)
     lightning_model = MedicalClassificationModel(
-        model, 
-        learning_rate=cfg.learning_rate, 
+        model,
+        learning_rate=cfg.learning_rate,
         num_classes=cfg.n_seg_classes
     )
 
-    # Создаем датасет
-    train_dataset = MedicalTensorDataset(cfg.data_root, cfg.img_list, cfg_namespace)
+    # === Создаем аугментации ===
+    train_transforms = get_train_transforms()
+    val_transforms = get_val_transforms()
+
+    # === Создаем датасеты с аугментациями ===
+    train_dataset = MedicalTensorDataset(
+        cfg.data_root,
+        cfg.img_list,
+        cfg_namespace,
+        transform=train_transforms  # <-- добавляем аугментации
+    )
 
     # Уменьшаем num_workers для избежания проблем с pickle
     num_workers = 0 if cfg.ci_test else 4  # временно 0 для стабильности
@@ -75,8 +101,13 @@ def main():
         pin_memory=cfg_namespace.pin_memory,
         persistent_workers=num_workers > 0
     )
-    
-    val_dataset = MedicalTensorDataset(cfg.val_data_root, cfg.val_list, cfg_namespace)
+
+    val_dataset = MedicalTensorDataset(
+        cfg.val_data_root,
+        cfg.val_list,
+        cfg_namespace,
+        transform=val_transforms  # <-- без аугментаций
+    )
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg.batch_size,
@@ -89,7 +120,7 @@ def main():
     # Logger & Checkpointing
     tb_logger = TensorBoardLogger("tb_logs", name="medical_classification")
     csv_logger = CSVLogger("logs", name="medical_classification")
-    
+
     # Callback для сохранения лучших весов
     best_model_checkpoint = ModelCheckpoint(
         dirpath=cfg.save_folder,
@@ -100,7 +131,7 @@ def main():
         save_weights_only=True,
         verbose=True
     )
-    
+
     # Callback для сохранения последнего чекпоинта
     last_model_checkpoint = ModelCheckpoint(
         dirpath=cfg.save_folder,
@@ -110,7 +141,7 @@ def main():
         save_weights_only=True,
         verbose=True
     )
-    
+
     # Callback для ранней остановки
     early_stopping = EarlyStopping(
         monitor=cfg.early_stopping_metric,
@@ -119,7 +150,7 @@ def main():
         verbose=True,
         mode=cfg.checkpoint_mode
     )
-    
+
     # Callback для мониторинга learning rate
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
 
@@ -151,12 +182,12 @@ def main():
         train_dataloaders=train_loader,
         val_dataloaders=val_loader
     )
-    
+
     # После обучения загружаем лучшую модель и сохраняем только веса
     best_checkpoint_path = best_model_checkpoint.best_model_path
     if best_checkpoint_path:
         print(f"Загружаем лучшую модель из: {best_checkpoint_path}")
-        
+
         # Загружаем модель с лучшими весами
         best_model = MedicalClassificationModel.load_from_checkpoint(
             best_checkpoint_path,
@@ -164,7 +195,7 @@ def main():
             learning_rate=cfg.learning_rate,
             num_classes=cfg.n_seg_classes
         )
-        
+
         # Сохраняем только веса модели (state_dict)
         torch.save(best_model.model.state_dict(), f"{cfg.save_folder}/best_weights.pth")
         print(f"Лучшие веса сохранены в: {cfg.save_folder}/best_weights.pth")

@@ -125,5 +125,4 @@ dmypy.json
 # My configurations:
 data/**/*.nii.gz
 data/**/*.txt
-pretrain/**/*.pth
 trails/**/*.pth

@@ -7,15 +7,17 @@ from monai.data import MetaTensor
 
 
 class MedicalTensorDataset(Dataset):
-    def __init__(self, data_root, img_list, sets):
+    def __init__(self, data_root, img_list, sets, transform=None):
         """
         data_root: путь к папке с тензорами (.pt файлами)
         img_list: путь к CSV файлу с колонками 'filename' и 'label'
         sets: объект конфигурации (опционально)
+        transform: MONAI-трансформации, которые работают с torch.Tensor
         """
         self.data_root = data_root
         self.labels_df = pd.read_csv(img_list)
         self.sets = sets
+        self.transform = transform
 
     def __len__(self):
         return len(self.labels_df)
@@ -38,7 +40,6 @@ class MedicalTensorDataset(Dataset):
             tensor = tensor.as_tensor()
 
         # === Проверка и коррекция формы ===
-        # Ожидаемая форма после загрузки: [1, 1, 128, 128, 128]
         if tensor.dim() != 5 or tensor.shape != (1, 1, 128, 128, 128):
             raise ValueError(
                 f"Неподдерживаемая форма тензора для индекса {index}: "
@@ -46,9 +47,12 @@ class MedicalTensorDataset(Dataset):
                 f"Проверьте файл: {tensor_path}"
             )
 
-        # Убираем внешнюю размерность батча, чтобы получить [1, 128, 128, 128]
-        # DataLoader добавит свою размерность батча позже.
-        tensor = tensor.squeeze(0)  # Теперь форма [1, 128, 128, 128]
+        # Убираем внешнюю размерность батча
+        tensor = tensor.squeeze(0)  # [1, 128, 128, 128]
+
+        # === Применяем аугментации, если заданы ===
+        if self.transform:
+            tensor = self.transform(tensor)
 
         # Создаем тензор метки
         label_tensor = torch.tensor(label, dtype=torch.long)
