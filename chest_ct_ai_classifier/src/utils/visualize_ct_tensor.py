@@ -62,7 +62,7 @@ def compare_volumes(original_path, processed_path, slice_idx=None):
 
     # Обработанный срез
     proc_slice = processed_volume[slice_idx_proc]
-    axes[1].imshow(proc_slice, cmap='gray', vmin=0, vmax=1)
+    axes[1].imshow(proc_slice, cmap='gray', vmin=-1, vmax=1)
     axes[1].set_title(f'Processed Tensor\nSlice {slice_idx_proc}\nShape: {proc_slice.shape}')
     axes[1].axis('off')
 
