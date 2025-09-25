@@ -179,11 +179,14 @@ def parse_dicom(dicom_dir: str|Path) -> DicomSummary | None:
       - series-wide z-positions and rescale arrays
     """
     root = Path(dicom_dir)
-    if not root.exists() or not root.is_dir():
+    if not root.exists():
         raise ValueError(f"Path is not a directory: {dicom_dir}")
 
     # 1) Collect readable DICOM files
-    dicom_files: List[Path] = []
+    if root.is_file() and root.suffix.lower() in ['.dcm', '.dicom']:
+        dicom_files = [root]
+    else:
+        dicom_files: List[Path] = []
 
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
