@@ -217,41 +217,95 @@ def run():
                      elapsed_time)
         return True
 
+    # Инициализация статистики
+    start_time = time.time()
+    stats = {
+        'total': 0,
+        'processed': 0,
+        'skipped_no_dicom': 0,
+        'skipped_no_study_id': 0,
+        'skipped_multiple_series': 0,
+        'already_exists': 0,
+        'errors': 0
+    }
+
     i = 0
     for row in rows:
         i += 1
         study_id = row.get('id', '').strip()
+        stats['total'] += 1
         logging.info("[%d/%d] Processing study ID: %s", i, len(rows), study_id)
-        dicom_dir = source_path / study_id
-        if not dicom_dir.exists():
-            dcom_tar = source_path / (study_id + '.tar.gz')
-            if not dcom_tar.exists():
-                logging.warning("  ❌  DICOM directory and archive not found for study_id: %s", dicom_dir)
-                continue
-            extract_archive(dcom_tar, source_path)
-        if reading_study_id_from_dicom:
-            summary = parse_dicom(dicom_dir)
-            study_id = summary.study_uid
-            if not study_id:
-                logging.error('  ❌  Unable to read study ID from DICOM directory: %s', dicom_dir)
-                continue
-        if dicom_dir.exists():
-            logging.info("  🕵️  Found DICOM directory: %s", dicom_dir)
-            target_dir = target_path / study_id
-            if do_transfer:
-                if not target_dir.exists() or len(list(target_dir.iterdir())) == 0:
-                    logging.info("  🎯  Target directory: %s", target_dir)
-                    if move_dicom_files(dicom_dir, target_dir):
-                        write_to_csv({
-                            'filename': study_id + '.pt',
-                            'label': row.get('patology')
-                        }, target_path / 'labels.csv')
+
+        try:
+            dicom_dir = source_path / study_id
+            if not dicom_dir.exists():
+                dcom_tar = source_path / (study_id + '.tar.gz')
+                if not dcom_tar.exists():
+                    logging.warning("  ❌  DICOM directory and archive not found for study_id: %s", dicom_dir)
+                    stats['skipped_no_dicom'] += 1
+                    continue
+                extract_archive(dcom_tar, source_path)
+
+            if reading_study_id_from_dicom:
+                summary = parse_dicom(dicom_dir)
+                study_id = summary.study_uid
+                if not study_id:
+                    logging.error('  ❌  Unable to read study ID from DICOM directory: %s', dicom_dir)
+                    stats['skipped_no_study_id'] += 1
+                    continue
+
+            if dicom_dir.exists():
+                logging.info("  🕵️  Found DICOM directory: %s", dicom_dir)
+                if study_id.endswith('.nii'):
+                    study_id = study_id[:-4]
+                target_dir = target_path / study_id
+                if do_transfer:
+                    if not target_dir.exists() or len(list(target_dir.iterdir())) == 0:
+                        logging.info("  🎯  Target directory: %s", target_dir)
+                        move_result = move_dicom_files(dicom_dir, target_dir)
+                        if move_result is False:
+                            # move_dicom_files returned False (multiple series skip)
+                            stats['skipped_multiple_series'] += 1
+                        elif move_result:
+                            write_to_csv({
+                                'filename': study_id + '.pt',
+                                'label': row.get('patology')
+                            }, target_path / 'labels.csv')
+                            stats['processed'] += 1
+                    else:
+                        logging.info("  😏  Target directory already exists: %s", target_dir)
+                        stats['already_exists'] += 1
                 else:
-                    logging.info("  😏  Target directory already exists: %s", target_dir)
+                    logging.info("  ✅ OK [transfer disabled]")
+                    stats['processed'] += 1
             else:
-                logging.info("  ✅ OK [transfer disabled]")
-        else:
-            logging.warning("  🤔  DICOM directory not found: %s", dicom_dir)
+                logging.warning("  🤔  DICOM directory not found: %s", dicom_dir)
+                stats['skipped_no_dicom'] += 1
+        except Exception as e:
+            logging.error("  💥  Error processing study %s: %s", study_id, str(e))
+            stats['errors'] += 1
+
+    # Вывод итоговой статистики
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    logging.info("=" * 80)
+    logging.info("🎯 ИТОГОВАЯ СТАТИСТИКА ВЫПОЛНЕНИЯ")
+    logging.info("=" * 80)
+    logging.info("📊 Всего исследований: %d", stats['total'])
+    logging.info("✅ Успешно обработано: %d", stats['processed'])
+    logging.info("🏠 Уже существует: %d", stats['already_exists'])
+    logging.info("❌ Пропущено (нет DICOM): %d", stats['skipped_no_dicom'])
+    logging.info("🆔 Пропущено (нет Study ID): %d", stats['skipped_no_study_id'])
+    logging.info("📁 Пропущено (множественные серии): %d", stats['skipped_multiple_series'])
+    logging.info("💥 Ошибки: %d", stats['errors'])
+    logging.info("⏱️ Общее время выполнения: %.2f сек (%.2f мин)", total_time, total_time / 60)
+
+    if stats['total'] > 0:
+        success_rate = (stats['processed'] + stats['already_exists']) / stats['total'] * 100
+        logging.info("📈 Процент успешности: %.1f%%", success_rate)
+
+    logging.info("=" * 80)
 
 
 def config_logger():
