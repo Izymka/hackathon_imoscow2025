@@ -1,5 +1,6 @@
 import argparse
 import csv
+from datetime import datetime
 import io
 import logging
 import os
@@ -147,6 +148,8 @@ def run():
 
     args = parser.parse_args()
 
+    config_logger()
+
     reading_study_id_from_dicom = args.read_study_id_from_dicom
     do_transfer = str(args.transfer).lower() in ('true', '1', 't', 'y', 'yes')
 
@@ -202,10 +205,11 @@ def run():
         files = [f for f in dicom_series_path.iterdir() if not f.name.startswith('.')]
         if not files:
             logging.error("  🚫  No files found in: %s", dicom_series_path)
+            return False
         if USE_ROBOCOPY:
-            subprocess.run(['robocopy', str(dicom_series_path), str(target_dir)],
-                           capture_output=True)
+            subprocess.run(['robocopy', str(dicom_series_path), str(target_dir)], capture_output=True)
         else:
+            target_dir.mkdir(parents=True, exist_ok=True)
             for file in files:
                 shutil.copy(str(file), str(target_dir))
         elapsed_time = time.time() - start_time
@@ -213,9 +217,11 @@ def run():
                      elapsed_time)
         return True
 
+    i = 0
     for row in rows:
+        i += 1
         study_id = row.get('id', '').strip()
-        logging.info("[%d/%d] Processing study ID: %s", rows.index(row) + 1, len(rows), study_id)
+        logging.info("[%d/%d] Processing study ID: %s", i, len(rows), study_id)
         dicom_dir = source_path / study_id
         if not dicom_dir.exists():
             dcom_tar = source_path / (study_id + '.tar.gz')
@@ -234,8 +240,7 @@ def run():
             target_dir = target_path / study_id
             if do_transfer:
                 if not target_dir.exists() or len(list(target_dir.iterdir())) == 0:
-                    logging.info("  👶  Creating target directory: %s", target_dir)
-                    target_dir.mkdir(parents=True, exist_ok=True)
+                    logging.info("  🎯  Target directory: %s", target_dir)
                     if move_dicom_files(dicom_dir, target_dir):
                         write_to_csv({
                             'filename': study_id + '.pt',
@@ -247,6 +252,42 @@ def run():
                 logging.info("  ✅ OK [transfer disabled]")
         else:
             logging.warning("  🤔  DICOM directory not found: %s", dicom_dir)
+
+
+def config_logger():
+    # Настройка логирования в файл с временной меткой
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Создаем директорию logs, если она не существует
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+
+    log_filename = logs_dir / f"collect_dataset_{timestamp}.log"
+
+    # Создаем форматтер для логов
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    # Получаем корневой логгер
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Очищаем существующие обработчики
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # Добавляем обработчик для консоли
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # Добавляем обработчик для файла
+    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    logging.info("Запуск сбора датасета. Лог файл: %s", log_filename)
 
 
 if __name__ == '__main__':
