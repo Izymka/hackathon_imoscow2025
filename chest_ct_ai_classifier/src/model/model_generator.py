@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from .models import resnet
+from models import resnet
 
 def adapt_model_for_larger_input(model, opt):
     """

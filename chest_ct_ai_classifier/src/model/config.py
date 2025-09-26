@@ -1,5 +1,5 @@
 # config.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 
@@ -20,6 +20,12 @@ class ModelConfig:
 
     # Classes
     n_seg_classes: int = 2  # для бинарной классификации остается 2
+
+    # Training parameters
+    batch_size: int = 4  # размер батча для обучения
+    learning_rate: float = 1e-4  # learning rate для оптимизатора
+    n_epochs: int = 100  # количество эпох обучения
+    num_workers: int = 4  # количество воркеров для DataLoader
 
     # Transfer learning parameters
     unfreeze_last_block: bool = True  # размораживать ли последний блок layer4
@@ -49,7 +55,7 @@ class ModelConfig:
     val_data_root: str = "data/test"  # может совпадать с data_root
 
     # Model layers
-    new_layer_names: List[str] = None
+    new_layer_names: List[str] = field(default_factory=lambda: ["fc", "layer4"])
     
     # Fine-tuning parameters
     base_lr_multiplier: float = 1.0  # множитель для базового learning rate
@@ -72,14 +78,11 @@ class ModelConfig:
     # Binary classification specific parameters
     binary_classification: bool = True  # флаг для бинарной классификации
     use_f1_macro: bool = True  # использовать f1_macro вместо f1_micro
-    additional_metrics: List[str] = None  # дополнительные метрики для логгирования
+    additional_metrics: List[str] = field(default_factory=list)  # дополнительные метрики для логгирования
 
     # Validation metrics for binary classification
     primary_metric: str = "val_f1"  # основная метрика для мониторинга
-    secondary_metrics: List[str] = None  # дополнительные метрики для отслеживания
+    secondary_metrics: List[str] = field(default_factory=list)  # дополнительные метрики для отслеживания
 
     def __post_init__(self):
-        if self.new_layer_names is None:
-            # Размораживаем последний блок ResNet (layer4) и полносвязный слой
-            self.new_layer_names = ["fc", "layer4"]
-
+        pass  # Настройки по умолчанию устанавливаются через default_factory

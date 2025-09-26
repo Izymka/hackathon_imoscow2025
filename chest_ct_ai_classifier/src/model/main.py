@@ -1,4 +1,3 @@
-# main.py
 from datasets.medical_tensors import MedicalTensorDataset
 from model_generator import generate_model
 from lightning_module import MedicalClassificationModel
