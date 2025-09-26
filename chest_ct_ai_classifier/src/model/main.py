@@ -74,11 +74,17 @@ def main():
     # УСТАНОВИТЬ НЕДЕТЕРМИНИРОВАННОСТЬ ПЕРЕД СОЗДАНИЕМ МОДЕЛИ
     torch.use_deterministic_algorithms(False)
 
+    # Используем новую функцию генерации с адаптацией размера входа
     model, parameters = generate_model(cfg_namespace)
+    
+    # Выводим информацию о модели
+    print(f"Модель создана для входа размером: {cfg.input_W}×{cfg.input_H}×{cfg.input_D}")
+    if hasattr(cfg_namespace, 'pretrain_path') and cfg_namespace.pretrain_path:
+        print(f"Использована предобученная модель с размером входа: {cfg.pretrain_input_size}×{cfg.pretrain_input_size}×{cfg.pretrain_input_size}")
+    
     lightning_model = MedicalClassificationModel(
         model,
         learning_rate=cfg.learning_rate,
-        # num_classes=cfg.n_seg_classes
     )
 
     # === Создаем аугментации ===

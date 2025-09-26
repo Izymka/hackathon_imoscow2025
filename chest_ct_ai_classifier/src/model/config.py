@@ -11,19 +11,19 @@ class ModelConfig:
     resnet_shortcut: str = "A"
 
     # Input dimensions
-    input_W: int = 128
-    input_H: int = 128
-    input_D: int = 128
+    input_W: int = 256
+    input_H: int = 256
+    input_D: int = 256
+    
+    # Размеры предобученной модели для адаптации
+    pretrain_input_size: int = 128  # размер входа предобученной модели
 
     # Classes
     n_seg_classes: int = 2  # для бинарной классификации остается 2
 
-    # Training parameters
-    batch_size: int = 8
-    learning_rate: float = 0.0001
-    n_epochs: int = 150
-    save_intervals: int = 100
-    num_workers: int = 8
+    # Transfer learning parameters
+    unfreeze_last_block: bool = True  # размораживать ли последний блок layer4
+    freeze_all_except_fc: bool = True  # заморозить все кроме fc
 
     # Early stopping parameters
     early_stopping_patience: int = 30  # эпох без улучшения до остановки
