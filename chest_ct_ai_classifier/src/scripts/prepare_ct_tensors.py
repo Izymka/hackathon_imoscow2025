@@ -3,7 +3,7 @@
 prepare_ct_for_medicalnet.py
 
 Подготовка КТ-данных для модели MedicalNet с сохранением исходного разрешения.
-Возвращает тензоры [1, 1, 128, 128, 128] с нормализацией [-1, 1].
+Возвращает тензоры [1, 1, 128, 128, 128] с адаптивной процентильной нормализацией [-1, 1].
 Без ресемплинга — исходное разрешение в плоскости и реальная толщина среза сохраняются.
 """
 
@@ -34,8 +34,35 @@ import torch.nn.functional as F
 # Конфигурация
 # -------------------------------
 TARGET_OUTPUT_SHAPE = (256, 256, 256)  # Желаемый выход после адаптивного пулинга
-HU_MIN = -1000
-HU_MAX = 1000
+PERCENTILE_MIN = 1.0  # Процентиль для минимального значения
+PERCENTILE_MAX = 99.0  # Процентиль для максимального значения
+
+
+# -------------------------------
+# Адаптивная процентильная нормализация
+# -------------------------------
+def adaptive_percentile_normalization(image, p_min=PERCENTILE_MIN, p_max=PERCENTILE_MAX):
+    """
+    Адаптивная процентильная нормализация для сохранения контраста между разными тканями
+    """
+    # Преобразуем в numpy если тензор
+    if isinstance(image, torch.Tensor):
+        img_np = image.cpu().numpy()
+    else:
+        img_np = image
+
+    # Вычисляем процентили
+    p_min_val = np.percentile(img_np, p_min)
+    p_max_val = np.percentile(img_np, p_max)
+
+    # Нормализуем в диапазон [0, 1]
+    normalized = np.clip((img_np - p_min_val) / (p_max_val - p_min_val + 1e-8), 0, 1)
+
+    # Преобразуем обратно в тензор
+    if isinstance(image, torch.Tensor):
+        return torch.from_numpy(normalized).to(image.device)
+    else:
+        return normalized
 
 
 # -------------------------------
@@ -56,14 +83,14 @@ def setup_logging(log_file: Path):
 
 
 # -------------------------------
-# Трансформации MONAI (без ресемплинга)
+# Трансформации MONAI (с адаптивной нормализацией)
 # -------------------------------
 def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
     """Трансформации БЕЗ ресемплинга — сохраняем исходное разрешение"""
     return Compose([
         EnsureChannelFirst(channel_dim="no_channel"),
         CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        ScaleIntensityRange(a_min=HU_MIN, a_max=HU_MAX, b_min=0.0, b_max=1.0, clip=True),
+        Lambda(lambda x: adaptive_percentile_normalization(x, PERCENTILE_MIN, PERCENTILE_MAX)),
         Lambda(lambda x: F.adaptive_avg_pool3d(x, target_output_shape)),
         NormalizeIntensity(subtrahend=0.5, divisor=0.5),  # [0,1] → [-1,1]
         ToTensor()
@@ -153,7 +180,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
                 pass
 
             if slope != 1.0 or intercept != 0.0:
-                image_array = image_array * slope + intercept
+                image_array = image_array * slope - intercept
 
             meta_dict = {
                 'spacing': spacing_dhw,
@@ -186,7 +213,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
                 slope = float(getattr(ds, 'RescaleSlope', 1.0))
                 intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
                 if slope != 1.0 or intercept != 0.0:
-                    image_array = image_array * slope + intercept
+                    image_array = image_array * slope - intercept
 
                 pixel_spacing = (1.0, 1.0)
                 if hasattr(ds, 'PixelSpacing'):
@@ -216,7 +243,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
                 slope = float(getattr(ds, 'RescaleSlope', 1.0))
                 intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
                 if slope != 1.0 or intercept != 0.0:
-                    image_array = image_array * slope + intercept
+                    image_array = image_array * slope - intercept
                 pixel_spacing = (1.0, 1.0)
                 if hasattr(ds, 'PixelSpacing'):
                     ps = ds.PixelSpacing
@@ -244,7 +271,8 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
                 dicom_files.append((p, inst))
             except Exception:
                 dicom_files.append((p, None))
-        dicom_files_sorted = sorted(dicom_files, key=lambda x: (x[1] is None, x[1] if x[1] is not None else 0, str(x[0])))
+        dicom_files_sorted = sorted(dicom_files,
+                                    key=lambda x: (x[1] is None, x[1] if x[1] is not None else 0, str(x[0])))
         series_file_names = [str(x[0]) for x in dicom_files_sorted]
 
         if len(series_file_names) < 3:
@@ -268,7 +296,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
             pass
 
         if slope != 1.0 or intercept != 0.0:
-            image_array = image_array * slope + intercept
+            image_array = image_array * slope - intercept
 
         meta_dict = {
             'spacing': spacing_dhw,
@@ -366,9 +394,9 @@ def main():
                         help="Output directory for processed .pt tensor files")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
-    parser.add_argument("--num-workers", type=int, default=1,
-                        help="Number of parallel workers (default: 1)")
-    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_medicalnet.log",
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="Number of parallel workers (default: 4)")
+    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_tensors.log",
                         help="Log file path")
 
     args = parser.parse_args()
@@ -392,6 +420,7 @@ def main():
     logger.info(f"Found {len(patient_dirs)} patient directories")
     logger.info(f"Target output tensor shape: {(1, 1) + TARGET_OUTPUT_SHAPE}")
     logger.info("✅ NO isotropic resampling — original resolution preserved (in-plane & slice thickness)")
+    logger.info(f"✅ Adaptive percentile normalization: {PERCENTILE_MIN}-{PERCENTILE_MAX}%")
 
     results_summary = {
         'total': len(patient_dirs),
@@ -401,7 +430,7 @@ def main():
         'config': {
             'target_output_shape': TARGET_OUTPUT_SHAPE,
             'resampling': 'none',
-            'hu_clipping_range': [HU_MIN, HU_MAX],
+            'percentile_normalization_range': [PERCENTILE_MIN, PERCENTILE_MAX],
             'output_intensity_range': [-1.0, 1.0]
         }
     }

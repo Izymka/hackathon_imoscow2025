@@ -83,4 +83,3 @@ class ModelConfig:
             # Размораживаем последний блок ResNet (layer4) и полносвязный слой
             self.new_layer_names = ["fc", "layer4"]
 
-        # ... existing code ...

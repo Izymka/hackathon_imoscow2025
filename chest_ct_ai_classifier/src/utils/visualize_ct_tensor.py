@@ -69,6 +69,5 @@ def compare_volumes(original_path, processed_path, slice_idx=None):
     plt.suptitle('Comparison: Original vs Processed')
     plt.tight_layout()
     plt.show()
-
 # Использование
 # compare_volumes("path/to/original/dicom/folder", "path/to/processed.pt")
