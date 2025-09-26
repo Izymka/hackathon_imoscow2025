@@ -504,6 +504,99 @@ def main():
         return None
 
 
+def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
+    """
+    Адаптирует модель для нового размера входа путем замены последнего слоя.
+    
+    Args:
+        model: Загруженная модель
+        input_size: Новый размер входа (W, H, D)
+        model_depth: Глубина модели ResNet
+        n_seg_classes: Количество классов
+    
+    Returns:
+        model: Адаптированная модель
+        trainable_parameters: Параметры для обучения
+    """
+    import torch
+    import torch.nn as nn
+    
+    print(f"Адаптация модели для входа размером {input_size}...")
+    
+    # --- Заморозка всех параметров ---
+    print("Замораживание всех параметров...")
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # --- Вычисление нового размера полносвязного слоя ---
+    # Создаем фиктивный тензор для вычисления размера после сверток
+    with torch.no_grad():
+        dummy_input = torch.randn(1, 1, input_size[2], input_size[1], input_size[0])
+        
+        # Извлекаем только сверточную часть модели
+        if hasattr(model, 'module'):
+            # Если модель обернута в DataParallel
+            conv_features = nn.Sequential(
+                model.module.conv1,
+                model.module.bn1,
+                model.module.relu,
+                model.module.maxpool,
+                model.module.layer1,
+                model.module.layer2,
+                model.module.layer3,
+                model.module.layer4,
+                model.module.avgpool
+            )
+        else:
+            conv_features = nn.Sequential(
+                model.conv1,
+                model.bn1,
+                model.relu,
+                model.maxpool,
+                model.layer1,
+                model.layer2,
+                model.layer3,
+                model.layer4,
+                model.avgpool
+            )
+        
+        # Вычисляем размер после сверточных слоев
+        conv_output = conv_features(dummy_input)
+        flattened_size = conv_output.view(conv_output.size(0), -1).size(1)
+    
+    print(f"Новый размер входа FC слоя: {flattened_size}")
+    
+    # --- Замена полносвязного слоя ---
+    if hasattr(model, 'module'):
+        # DataParallel случай
+        old_fc = model.module.fc
+        model.module.fc = nn.Linear(flattened_size, n_seg_classes)
+        new_fc = model.module.fc
+    else:
+        old_fc = model.fc
+        model.fc = nn.Linear(flattened_size, n_seg_classes)
+        new_fc = model.fc
+    
+    print(f"Заменен FC слой: {old_fc.in_features} → {flattened_size} входов, {n_seg_classes} выходов")
+    
+    # --- Инициализация нового слоя ---
+    if isinstance(new_fc, nn.Linear):
+        # Xavier инициализация
+        nn.init.xavier_uniform_(new_fc.weight)
+        if new_fc.bias is not None:
+            nn.init.zeros_(new_fc.bias)
+    
+    # --- Размораживание только FC слоя ---
+    print("Размораживание FC слоя для обучения...")
+    for param in new_fc.parameters():
+        param.requires_grad = True
+    
+    # --- Возврат обучаемых параметров ---
+    trainable_parameters = filter(lambda p: p.requires_grad, model.parameters())
+    
+    return model, trainable_parameters
+
+
 def test_inference_example():
     """Пример тестирования inference."""
     rprint("\n🔬 [bold blue]Тестирование inference модуля...[/bold blue]")
