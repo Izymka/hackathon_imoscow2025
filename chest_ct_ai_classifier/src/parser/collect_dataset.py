@@ -233,6 +233,7 @@ def run():
     for row in rows:
         i += 1
         study_id = row.get('id', '').strip()
+        label_value = row.get('patology') or row.get('pathology')
         stats['total'] += 1
         logging.info("[%d/%d] Processing study ID: %s", i, len(rows), study_id)
 
@@ -269,7 +270,7 @@ def run():
                         elif move_result:
                             write_to_csv({
                                 'filename': study_id + '.pt',
-                                'label': row.get('patology')
+                                'label': label_value
                             }, target_path / 'labels.csv')
                             stats['processed'] += 1
                     else:
