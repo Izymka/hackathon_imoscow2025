@@ -33,14 +33,14 @@ class MedicalTensorDataset(Dataset):
 
         # === Безопасная загрузка тензора с MetaTensor ===
         with torch.serialization.safe_globals([MetaTensor]):
-            tensor = torch.load(tensor_path, weights_only=True)
+            tensor = torch.load(tensor_path, weights_only=False)
 
         # === Конвертация MetaTensor в обычный torch.Tensor ===
         if isinstance(tensor, MetaTensor):
             tensor = tensor.as_tensor()
 
         # === Проверка и коррекция формы ===
-        if tensor.dim() != 5 or tensor.shape != (1, 1, 128, 128, 128):
+        if tensor.dim() != 5 or tensor.shape != (1, 1, 256, 256, 256):
             raise ValueError(
                 f"Неподдерживаемая форма тензора для индекса {index}: "
                 f"получено {tensor.shape}, ожидается (1, 1, 128, 128, 128). "

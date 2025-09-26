@@ -62,7 +62,7 @@ def get_safe_train_transforms(input_size: Tuple[int, int, int]) -> Compose:
     Сохраняют медицинскую информативность данных.
     """
     return Compose([
-        EnsureChannelFirst(),
+        #EnsureChannelFirst(),
 
         # Пространственные аугментации (консервативные)
         RandFlip(prob=0.3, spatial_axis=0),  # только по одной оси
@@ -74,15 +74,15 @@ def get_safe_train_transforms(input_size: Tuple[int, int, int]) -> Compose:
         RandAdjustContrast(gamma=(0.9, 1.1), prob=0.2),  # минимальная коррекция контраста
         RandScaleIntensity(factors=(-0.05, 0.05), prob=0.2),  # масштабирование
 
-        ToTensor(),
+        #ToTensor(),
     ])
 
 
 def get_val_transforms() -> Compose:
     """Трансформации для валидации (только нормализация)."""
     return Compose([
-        EnsureChannelFirst(),
-        ToTensor(),
+        #EnsureChannelFirst(),
+        #ToTensor(),
     ])
 
 
@@ -141,15 +141,15 @@ class CrossValidationTrainer:
         )
 
         # Параметры DataLoader
-        num_workers = 0 if self.cfg.ci_test else min(4, os.cpu_count())
+        num_workers = 0 if self.cfg.ci_test else min(0, os.cpu_count())
 
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=num_workers,
+            num_workers=0,
             pin_memory=self.cfg_namespace.pin_memory and torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=0,
             drop_last=True  # для стабильности batch norm
         )
 
@@ -175,12 +175,21 @@ class CrossValidationTrainer:
 
         # Создаем модель для фолда
         model, parameters = generate_model(self.cfg_namespace)
+        if torch.cuda.is_available() and not self.cfg.no_cuda:
+            device = torch.device('cuda:0')
+            model = model.to(device)
+            print(f"✅ Модель перемещена на GPU: {device}")
+        else:
+            device = torch.device('cpu')
+            model = model.to(device)
+            print(f"⚠️ Модель на CPU: {device}")
+
         lightning_model = MedicalClassificationModel(
             model,
             learning_rate=self.cfg.learning_rate,
             num_classes=self.cfg.n_seg_classes,
-            use_weighted_loss=True,  # для несбалансированных классов
-            class_weights=self.calculate_class_weights(train_loader)
+            use_weighted_loss=True,
+            class_weights=self.calculate_class_weights(train_loader).to(device)
         )
 
         # Логгеры для фолда
@@ -273,9 +282,10 @@ class CrossValidationTrainer:
 
         for batch in train_loader:
             _, labels = batch
+            if torch.cuda.is_available() and not self.cfg.no_cuda:
+                labels = labels.cuda()
             for label in labels:
                 class_counts[int(label.item())] += 1
-
         # Инвертированные частоты
         total_samples = class_counts.sum()
         class_weights = total_samples / (self.cfg.n_seg_classes * class_counts)

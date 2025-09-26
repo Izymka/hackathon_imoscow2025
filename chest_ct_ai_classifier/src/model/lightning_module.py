@@ -80,6 +80,9 @@ class MedicalClassificationModel(pl.LightningModule):
         # Регистрируем веса классов
         if class_weights is not None:
             self.register_buffer('class_weights', class_weights)
+            if torch.cuda.is_available():
+                class_weights = class_weights.cuda()
+            self.register_buffer('class_weights', class_weights)
         else:
             self.class_weights = None
 
@@ -134,6 +137,8 @@ class MedicalClassificationModel(pl.LightningModule):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
+        device = next(self.model.parameters()).device
+        x = x.to(device)
         return self.model(x)
 
     def training_step(self, batch: tuple, batch_idx: int) -> Dict[str, Any]:
