@@ -147,7 +147,7 @@ def generate_model(opt):
 
         pretrain_dict = {k: v for k, v in pretrain['state_dict'].items() if k in net_dict.keys()}
         net_dict.update(pretrain_dict)
-        model.load_state_dict(net_dict)
+        model.load_state_dict(net_dict, strict=False) # чтобы игнорировать лишние ключи в загруженной модели
 
         # Проверка необходимости адаптации размеров
         current_input_size = (opt.input_W, opt.input_H, opt.input_D)
