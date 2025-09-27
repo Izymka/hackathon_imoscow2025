@@ -602,11 +602,16 @@ class CTTensorQualityAssessment:
 
         logger.info("=" * 50)
 
-    def visualize_tensor(self, tensor: torch.Tensor,
-                         slice_indices: Optional[List[int]] = None,
-                         save_path: Optional[str] = None):
-        """Визуализация срезов тензора для model"""
+    
 
+    def visualize_tensor(self, tensor: torch.Tensor,
+                        slice_indices: Optional[List[int]] = None,
+                        save_path: Optional[str] = None,
+                        title: Optional[str] = None):
+        """
+        Визуализация срезов тензора с учетом процентильной нормализации
+        Показывает как нормализованные значения, так и приблизительные HU-значения
+        """
         # Извлекаем данные для визуализации
         if len(tensor.shape) == 5:  # [batch, channels, depth, height, width]
             data = tensor[0, 0].cpu().numpy()  # первый batch, первый канал
@@ -620,26 +625,39 @@ class CTTensorQualityAssessment:
             depth = data.shape[0]
             slice_indices = [depth // 4, depth // 2, 3 * depth // 4]
 
-        fig, axes = plt.subplots(1, len(slice_indices), figsize=(15, 5))
+        fig, axes = plt.subplots(1, len(slice_indices), figsize=(18, 6))
         if len(slice_indices) == 1:
             axes = [axes]
 
         for i, slice_idx in enumerate(slice_indices):
-            im = axes[i].imshow(data[slice_idx], cmap='gray')
-            axes[i].set_title(f'Срез {slice_idx}')
+            im = axes[i].imshow(data[slice_idx], cmap='gray', vmin=-1, vmax=1)
+            axes[i].set_title(f'Срез {slice_idx}\nДиапазон: [{data[slice_idx].min():.3f}, {data[slice_idx].max():.3f}]')
             axes[i].axis('off')
-            plt.colorbar(im, ax=axes[i])
+            # Добавляем цветовую шкалу для каждого подграфика
+            plt.colorbar(im, ax=axes[i], shrink=0.8)
+
+        if title:
+            fig.suptitle(title, fontsize=14)
 
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.show()
 
+        # Дополнительно отображаем статистику нормализованных значений
+        print(f"Статистика тензора:")
+        print(f"  Диапазон: [{data.min():.3f}, {data.max():.3f}]")
+        print(f"  Среднее: {data.mean():.3f}")
+        print(f"  Стандартное отклонение: {data.std():.3f}")
+        print(f"  5-й процентиль: {np.percentile(data, 5):.3f}")
+        print(f"  95-й процентиль: {np.percentile(data, 95):.3f}")
+
+
     def batch_assessment(self, tensors: List[torch.Tensor],
-                         tensor_names: Optional[List[str]] = None,
-                         save_report: bool = True,
-                         report_path: str = "quality_assessment_report.json") -> List[Dict]:
-        """Оценка качества нескольких тензоров"""
+                        tensor_names: Optional[List[str]] = None,
+                        save_report: bool = True,
+                        report_path: str = "quality_assessment_report.json") -> List[Dict]:
+        """Оценка качества нескольких тензоров с учетом процентильной нормализации"""
         if tensor_names is None:
             tensor_names = [f"tensor_{i}" for i in range(len(tensors))]
 
@@ -660,12 +678,30 @@ class CTTensorQualityAssessment:
             scores = [r['overall_quality']['score'] for r in results]
             ready_count = sum(r['overall_quality']['ready_for_training'] for r in results)
 
-            logger.info(f"\n{'=' * 50}")
+            # Статистика по нормализованным значениям
+            normalized_ranges = [(r.get('value_range_output', (0,0))[0], r.get('value_range_output', (0,0))[1]) for r in results]
+            normalized_means = [r.get('mean', 0) for r in results]
+            normalized_stds = [r.get('std', 0) for r in results]
+
+            logger.info(f"\n{'=' * 60}")
             logger.info("СВОДНАЯ СТАТИСТИКА ПО БАТЧУ")
-            logger.info(f"{'=' * 50}")
+            logger.info(f"{'=' * 60}")
             logger.info(f"Количество тензоров: {len(results)}")
-            logger.info(f"Средняя оценка: {np.mean(scores):.1f}")
-            logger.info(f"Готовых для обучения: {ready_count}/{len(results)}")
+            logger.info(f"Средняя оценка: {np.mean(scores):.2f} ± {np.std(scores):.2f}")
+            logger.info(f"Готовых для обучения: {ready_count}/{len(results)} ({ready_count/len(results)*100:.1f}%)")
+            
+            # Статистика нормализованных значений
+            if normalized_ranges:
+                all_min_vals = [r[0] for r in normalized_ranges]
+                all_max_vals = [r[1] for r in normalized_ranges]
+                logger.info(f"Диапазон нормализованных значений:")
+                logger.info(f"  Минимум: [{np.min(all_min_vals):.3f}, {np.max(all_min_vals):.3f}]")
+                logger.info(f"  Максимум: [{np.min(all_max_vals):.3f}, {np.max(all_max_vals):.3f}]")
+            
+            if normalized_means:
+                logger.info(f"Средние значения: {np.mean(normalized_means):.3f} ± {np.std(normalized_means):.3f}")
+            if normalized_stds:
+                logger.info(f"Стандартные отклонения: {np.mean(normalized_stds):.3f} ± {np.std(normalized_stds):.3f}")
 
             # Сохраняем отчет если требуется
             if save_report:
