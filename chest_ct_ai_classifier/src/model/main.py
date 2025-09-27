@@ -27,6 +27,9 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import print as rprint
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
 # === Локальные импорты ===
 from datasets.medical_tensors import MedicalTensorDataset
 from model_generator import generate_model
@@ -147,10 +150,10 @@ class CrossValidationTrainer:
             train_dataset,
             batch_size=self.cfg.batch_size,
             shuffle=True,
-            num_workers=0,
+            num_workers=num_workers,
             pin_memory=self.cfg_namespace.pin_memory and torch.cuda.is_available(),
-            persistent_workers=0,
-            drop_last=True  # для стабильности batch norm
+            persistent_workers=num_workers > 0,
+            drop_last=True
         )
 
         val_loader = DataLoader(
@@ -171,25 +174,24 @@ class CrossValidationTrainer:
     def train_fold(self, fold: int, train_loader: DataLoader, val_loader: DataLoader) -> Dict:
         """Обучает модель на одном фолде."""
 
-        rprint(f"\n🔄 [bold blue]Обучение фолда {fold + 1}/{self.cfg.n_splits}[/bold blue]")
+        rprint(f"\n📄 [bold blue]Обучение фолда {fold + 1}/{self.cfg.n_splits}[/bold blue]")
 
         # Создаем модель для фолда
         model, parameters = generate_model(self.cfg_namespace)
-        if torch.cuda.is_available() and not self.cfg.no_cuda:
-            device = torch.device('cuda:0')
-            model = model.to(device)
-            print(f"✅ Модель перемещена на GPU: {device}")
-        else:
-            device = torch.device('cpu')
-            model = model.to(device)
-            print(f"⚠️ Модель на CPU: {device}")
+
+        # НЕ перемещаем модель вручную - Lightning сделает это автоматически
+        device_name = 'GPU' if torch.cuda.is_available() and not self.cfg.no_cuda else 'CPU'
+        print(f"✅ Устройство для обучения: {device_name}")
+
+        # ИСПРАВЛЕНИЕ: Вычисляем веса классов на CPU
+        class_weights = self.calculate_class_weights(train_loader)
 
         lightning_model = MedicalClassificationModel(
             model,
             learning_rate=self.cfg.learning_rate,
             num_classes=self.cfg.n_seg_classes,
             use_weighted_loss=True,
-            class_weights=self.calculate_class_weights(train_loader).to(device)
+            class_weights=class_weights  # Lightning автоматически переместит на правильное устройство
         )
 
         # Логгеры для фолда
@@ -282,10 +284,9 @@ class CrossValidationTrainer:
 
         for batch in train_loader:
             _, labels = batch
-            if torch.cuda.is_available() and not self.cfg.no_cuda:
-                labels = labels.cuda()
             for label in labels:
                 class_counts[int(label.item())] += 1
+
         # Инвертированные частоты
         total_samples = class_counts.sum()
         class_weights = total_samples / (self.cfg.n_seg_classes * class_counts)

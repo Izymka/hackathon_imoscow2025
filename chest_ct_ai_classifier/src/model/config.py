@@ -2,6 +2,9 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 @dataclass
 class ModelConfig:
@@ -20,10 +23,10 @@ class ModelConfig:
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 8
+    batch_size: int = os.getenv("MODEL_HP_BATCH_SIZE") or 1
     learning_rate: float = 1e-4
-    n_epochs: int = 150
-    num_workers: int = 8
+    n_epochs: int = os.getenv("MODEL_HP_EPOCHS") or 1
+    num_workers: int = os.getenv("MODEL_HP_WORKERS") or 0
 
     # ========== ADVANCED TRAINING PARAMETERS ==========
     # Оптимизация
@@ -136,7 +139,7 @@ class ModelConfig:
 
     # Производительность
     mixed_precision: bool = True  # 16-bit training
-    compile_model: bool = False  # PyTorch 2.0 compilation
+    compile_model: bool = os.getenv('MODEL_HP_COMPILE_MODEL') or False  # PyTorch 2.0 compilation
 
     # ========== TESTING AND DEBUGGING ==========
     ci_test: bool = False
@@ -154,6 +157,11 @@ class ModelConfig:
     # Ensemble параметры
     use_ensemble: bool = False
     ensemble_models: List[str] = field(default_factory=list)
+
+    print(f"Learning rate: {learning_rate}")
+    print(f"Batch size: {batch_size}")
+    print(f"Epochs: {n_epochs}")
+    print(f"Num workers: {num_workers}")
 
     def __post_init__(self):
         """Постобработка конфига после инициализации."""

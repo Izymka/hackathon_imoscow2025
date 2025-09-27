@@ -77,28 +77,31 @@ class MedicalClassificationModel(pl.LightningModule):
         self.use_weighted_loss = use_weighted_loss
         self.use_focal_loss = use_focal_loss
 
-        # Регистрируем веса классов
         if class_weights is not None:
-            self.register_buffer('class_weights', class_weights)
-            if torch.cuda.is_available():
-                class_weights = class_weights.cuda()
             self.register_buffer('class_weights', class_weights)
         else:
             self.class_weights = None
 
-        # Loss функции
-        if use_focal_loss:
-            self.loss_fn = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
-        else:
-            weight = self.class_weights if use_weighted_loss else None
-            self.loss_fn = nn.CrossEntropyLoss(weight=weight)
+        self.use_focal_loss = use_focal_loss
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
 
-        # Инициализация метрик для каждой стадии
+        # Инициализация метрик
         self._init_metrics()
 
-        # Для хранения предсказаний и целей (для детального анализа)
+        # Для хранения предсказаний и целей
         self.validation_step_outputs = []
         self.test_step_outputs = []
+
+    def setup(self, stage: str):
+        """Вызывается автоматически Lightning для setup на правильном устройстве."""
+
+        # Создаем loss функции на правильном устройстве
+        if self.use_focal_loss:
+            self.loss_fn = FocalLoss(alpha=self.focal_alpha, gamma=self.focal_gamma)
+        else:
+            weight = self.class_weights if self.use_weighted_loss else None
+            self.loss_fn = nn.CrossEntropyLoss(weight=weight)
 
     def _init_metrics(self):
         """Инициализация торчевых метрик."""
@@ -144,6 +147,8 @@ class MedicalClassificationModel(pl.LightningModule):
     def training_step(self, batch: tuple, batch_idx: int) -> Dict[str, Any]:
         """Шаг обучения."""
         inputs, targets = batch
+        inputs = inputs.to(self.device)
+        targets = targets.to(self.device)
 
         # Forward pass
         outputs = self.forward(inputs)
@@ -176,6 +181,9 @@ class MedicalClassificationModel(pl.LightningModule):
     def validation_step(self, batch: tuple, batch_idx: int) -> Dict[str, Any]:
         """Шаг валидации."""
         inputs, targets = batch
+        device = next(self.model.parameters()).device
+        inputs = inputs.to(device)
+        targets = targets.to(device)
 
         # Forward pass
         outputs = self.forward(inputs)
@@ -204,9 +212,9 @@ class MedicalClassificationModel(pl.LightningModule):
         # Сохраняем для детального анализа
         step_output = {
             'val_loss': loss,
-            'preds': pred_classes.detach().cpu(),
-            'targets': targets.detach().cpu(),
-            'probs': probs.detach().cpu()
+            'preds': pred_classes.detach(),
+            'targets': targets.detach(),
+            'probs': probs.detach()
         }
         self.validation_step_outputs.append(step_output)
 
@@ -224,6 +232,9 @@ class MedicalClassificationModel(pl.LightningModule):
     def test_step(self, batch: tuple, batch_idx: int) -> Dict[str, Any]:
         """Шаг тестирования."""
         inputs, targets = batch
+        device = next(self.model.parameters()).device
+        inputs = inputs.to(self.device)
+        targets = targets.to(self.device)
 
         # Forward pass
         outputs = self.forward(inputs)
@@ -249,12 +260,12 @@ class MedicalClassificationModel(pl.LightningModule):
         # Confusion Matrix
         self.test_confusion_matrix(pred_classes, targets)
 
-        # Сохраняем для анализа
+        # Сохраняем для анализа НА ТОМ ЖЕ УСТРОЙСТВЕ
         step_output = {
             'test_loss': loss,
-            'preds': pred_classes.detach().cpu(),
-            'targets': targets.detach().cpu(),
-            'probs': probs.detach().cpu()
+            'preds': pred_classes.detach(),  # Убираем .cpu()
+            'targets': targets.detach(),     # Убираем .cpu()
+            'probs': probs.detach()          # Убираем .cpu()
         }
         self.test_step_outputs.append(step_output)
 
@@ -272,14 +283,15 @@ class MedicalClassificationModel(pl.LightningModule):
     def on_validation_epoch_end(self):
         """Вызывается в конце каждой эпохи валидации."""
         if self.validation_step_outputs:
-            # Собираем все предсказания и цели
-            all_preds = torch.cat([x['preds'] for x in self.validation_step_outputs])
-            all_targets = torch.cat([x['targets'] for x in self.validation_step_outputs])
-            all_probs = torch.cat([x['probs'] for x in self.validation_step_outputs])
+            # ИСПРАВЛЕНИЕ: Убеждаемся, что все тензоры на одном устройстве
+            device = self.device  # Используем self.device вместо next(self.model.parameters()).device
+            all_preds = torch.cat([x['preds'].to(device) for x in self.validation_step_outputs])
+            all_targets = torch.cat([x['targets'].to(device) for x in self.validation_step_outputs])
+            all_probs = torch.cat([x['probs'].to(device) for x in self.validation_step_outputs])
 
             # Детализированный отчет (каждые несколько эпох)
             if self.current_epoch % 10 == 0:
-                self._log_detailed_metrics(all_preds, all_targets, all_probs, 'val')
+                self._log_detailed_metrics(all_preds.cpu(), all_targets.cpu(), all_probs.cpu(), 'val')
 
             # Сохраняем метрики для использования в коллбэках
             self.validation_metrics = {
@@ -297,13 +309,14 @@ class MedicalClassificationModel(pl.LightningModule):
     def on_test_epoch_end(self):
         """Вызывается в конце тестирования."""
         if self.test_step_outputs:
-            # Собираем все предсказания и цели
-            all_preds = torch.cat([x['preds'] for x in self.test_step_outputs])
-            all_targets = torch.cat([x['targets'] for x in self.test_step_outputs])
-            all_probs = torch.cat([x['probs'] for x in self.test_step_outputs])
+            # ИСПРАВЛЕНИЕ: Убеждаемся, что все тензоры на одном устройстве
+            device = self.device  # Используем self.device вместо next(self.model.parameters()).device
+            all_preds = torch.cat([x['preds'].to(device) for x in self.test_step_outputs])
+            all_targets = torch.cat([x['targets'].to(device) for x in self.test_step_outputs])
+            all_probs = torch.cat([x['probs'].to(device) for x in self.test_step_outputs])
 
             # Детализированный отчет
-            self._log_detailed_metrics(all_preds, all_targets, all_probs, 'test')
+            self._log_detailed_metrics(all_preds.cpu(), all_targets.cpu(), all_probs.cpu(), 'test')
 
             # Очищаем накопленные выходы
             self.test_step_outputs.clear()

@@ -1,4 +1,4 @@
-FROM gcr.io/kaggle-gpu-images/python:latest
+FROM gcr.io/kaggle-gpu-images/python:v161
 
 RUN pip install --no-cache-dir jupyterlab
 
@@ -10,7 +10,12 @@ RUN groupadd --gid $USER_GID $USERNAME \
     && mkdir -p /workspace \
     && chown $USERNAME:$USERNAME /workspace
 
-USER $USERNAME
+# Исправляем права доступа для kaggle логов
+RUN touch /tmp/kaggle.log && chmod 666 /tmp/kaggle.log
+RUN sudo chmod 777 /var/log/pip.log
+
+
+#USER $USERNAME
 WORKDIR /workspace
 
 EXPOSE 8888

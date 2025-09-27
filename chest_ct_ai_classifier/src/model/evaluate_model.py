@@ -28,6 +28,8 @@ def evaluate_model(model, test_loader, device, class_names=None, save_results=Tr
     if save_results:
         os.makedirs(output_dir, exist_ok=True)
 
+    model = model.to(device)
+
     # Переводим модель в режим оценки
     model.eval()
 

@@ -14,6 +14,14 @@
         </option>
         <option name="commandLineOptions" value="--gpus all" />
         <option name="sourceFilePath" value="chest_ct_ai_classifier/docker/dev/Dockerfile" />
+        <option name="volumeBindings">
+          <list>
+            <DockerVolumeBindingImpl>
+              <option name="containerPath" value="/workspace" />
+              <option name="hostPath" value="G:\Projects\hackathon_imoscow2025\chest_ct_ai_classifier" />
+            </DockerVolumeBindingImpl>
+          </list>
+        </option>
       </settings>
     </deployment>
     <method v="2" />
