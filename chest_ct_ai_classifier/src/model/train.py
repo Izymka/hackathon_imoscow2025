@@ -34,6 +34,7 @@ def train(data_loader, model, optimizer, scheduler,
 
     logger = setup_logging()
     device = torch.device("cuda" if (torch.cuda.is_available() and not sets.no_cuda) else "cpu")
+    print(f"🖥️  Используем устройство [x]: {device}")
 
     # === FIX: добавлен критерий потерь ===
     loss_cls = nn.CrossEntropyLoss().to(device)

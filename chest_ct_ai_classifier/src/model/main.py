@@ -191,8 +191,11 @@ class CrossValidationTrainer:
             learning_rate=self.cfg.learning_rate,
             num_classes=self.cfg.n_seg_classes,
             use_weighted_loss=True,
-            class_weights=class_weights  # Lightning автоматически переместит на правильное устройство
+            class_weights=class_weights,
         )
+        if device_name == 'GPU':
+            lightning_model = lightning_model.to('cuda')
+            print("Switched device: ", lightning_model.device)
 
         # Логгеры для фолда
         fold_name = f"medical_classification_fold_{fold + 1}"
@@ -245,7 +248,8 @@ class CrossValidationTrainer:
             enable_progress_bar=True,
             enable_model_summary=True,
             gradient_clip_val=self.cfg.gradient_clip_val,
-            precision=16 if accelerator == "gpu" else 32,  # mixed precision
+            #precision=16 if accelerator == "gpu" else 32,  # mixed precision
+            precision=32,
         )
 
         # Обучение
@@ -280,12 +284,15 @@ class CrossValidationTrainer:
 
     def calculate_class_weights(self, train_loader: DataLoader) -> torch.Tensor:
         """Вычисляет веса классов для сбалансированной функции потерь."""
-        class_counts = torch.zeros(self.cfg.n_seg_classes)
+        class_counts = torch.zeros(self.cfg.n_seg_classes, dtype=torch.float32)
 
         for batch in train_loader:
             _, labels = batch
+            # Принудительно перемещаем на CPU и извлекаем значения
+            labels = labels.cpu() if isinstance(labels, torch.Tensor) else labels
             for label in labels:
-                class_counts[int(label.item())] += 1
+                label_val = int(label.item()) if hasattr(label, 'item') else int(label)
+                class_counts[label_val] += 1
 
         # Инвертированные частоты
         total_samples = class_counts.sum()
@@ -294,7 +301,8 @@ class CrossValidationTrainer:
         # Нормализация
         class_weights = class_weights / class_weights.sum() * self.cfg.n_seg_classes
 
-        return class_weights
+        # Возвращаем веса на CPU
+        return class_weights.cpu()
 
     def run_cross_validation(self) -> Dict:
         """Запускает полную кросс-валидацию."""
@@ -347,8 +355,12 @@ class CrossValidationTrainer:
             fold_table.add_column("Класс 0", style="red")
             fold_table.add_column("Класс 1", style="green")
 
-            train_counts = np.bincount(train_labels)
-            val_counts = np.bincount(val_labels)
+            # Конвертируем метки в numpy массивы для избежания проблем с устройствами
+            train_labels_np = np.array([int(label) if isinstance(label, (torch.Tensor, int)) else label for label in train_labels])
+            val_labels_np = np.array([int(label) if isinstance(label, (torch.Tensor, int)) else label for label in val_labels])
+
+            train_counts = np.bincount(train_labels_np)
+            val_counts = np.bincount(val_labels_np)
 
             fold_table.add_row(
                 "Обучение",

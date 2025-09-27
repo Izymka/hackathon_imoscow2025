@@ -93,6 +93,8 @@ class MedicalClassificationModel(pl.LightningModule):
         self.validation_step_outputs = []
         self.test_step_outputs = []
 
+        #print(f"MedicalClassificationModel device: {self.device}", self.device)
+
     def setup(self, stage: str):
         """Вызывается автоматически Lightning для setup на правильном устройстве."""
 
@@ -181,37 +183,38 @@ class MedicalClassificationModel(pl.LightningModule):
     def validation_step(self, batch: tuple, batch_idx: int) -> Dict[str, Any]:
         """Шаг валидации."""
         inputs, targets = batch
-        device = next(self.model.parameters()).device
-        inputs = inputs.to(device)
-        targets = targets.to(device)
+
+        # Принудительно перемещаем на устройство модели
+        inputs = inputs.to(self.device)
+        targets = targets.to(self.device)
 
         # Forward pass
         outputs = self.forward(inputs)
         loss = self.loss_fn(outputs, targets)
 
-        # Предсказания
+        # Предсказания - убеждаемся что все на правильном устройстве
         probs = torch.softmax(outputs, dim=1)
         pred_classes = torch.argmax(probs, dim=1)
 
-        # Метрики
-        self.val_accuracy(pred_classes, targets)
-        self.val_f1(pred_classes, targets)
-        self.val_precision(pred_classes, targets)
-        self.val_recall(pred_classes, targets)
-        self.val_specificity(pred_classes, targets)
+        # Метрики - убеждаемся что входы на правильном устройстве
+        self.val_accuracy(pred_classes.to(self.device), targets.to(self.device))
+        self.val_f1(pred_classes.to(self.device), targets.to(self.device))
+        self.val_precision(pred_classes.to(self.device), targets.to(self.device))
+        self.val_recall(pred_classes.to(self.device), targets.to(self.device))
+        self.val_specificity(pred_classes.to(self.device), targets.to(self.device))
 
         # AUROC требует вероятности
         if self.num_classes == 2:
-            self.val_auroc(probs[:, 1], targets)
+            self.val_auroc(probs[:, 1].to(self.device), targets.to(self.device))
         else:
-            self.val_auroc(probs, targets)
+            self.val_auroc(probs.to(self.device), targets.to(self.device))
 
         # Confusion Matrix
-        self.val_confusion_matrix(pred_classes, targets)
+        self.val_confusion_matrix(pred_classes.to(self.device), targets.to(self.device))
 
-        # Сохраняем для детального анализа
+        # Сохраняем для детального анализа - НА CPU чтобы избежать накопления на GPU
         step_output = {
-            'val_loss': loss,
+            'val_loss': loss.detach().cpu(),
             'preds': pred_classes.detach(),
             'targets': targets.detach(),
             'probs': probs.detach()

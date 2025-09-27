@@ -33,28 +33,34 @@ class MedicalTensorDataset(Dataset):
 
         # === Безопасная загрузка тензора с MetaTensor ===
         with torch.serialization.safe_globals([MetaTensor]):
-            tensor = torch.load(tensor_path, weights_only=False)
+            tensor = torch.load(tensor_path, weights_only=False, map_location='cpu')
 
         # === Конвертация MetaTensor в обычный torch.Tensor ===
         if isinstance(tensor, MetaTensor):
             tensor = tensor.as_tensor()
 
+        # Принудительно приводим к CPU и правильному типу
+        tensor = tensor.cpu().float()
+
         # === Проверка и коррекция формы ===
         if tensor.dim() != 5 or tensor.shape != (1, 1, 256, 256, 256):
             raise ValueError(
                 f"Неподдерживаемая форма тензора для индекса {index}: "
-                f"получено {tensor.shape}, ожидается (1, 1, 128, 128, 128). "
+                f"получено {tensor.shape}, ожидается (1, 1, 256, 256, 256). "
                 f"Проверьте файл: {tensor_path}"
             )
 
         # Убираем внешнюю размерность батча
-        tensor = tensor.squeeze(0)  # [1, 128, 128, 128]
+        tensor = tensor.squeeze(0)  # [1, 256, 256, 256]
 
         # === Применяем аугментации, если заданы ===
         if self.transform:
             tensor = self.transform(tensor)
 
-        # Создаем тензор метки
+        # Убеждаемся что тензор правильного типа и на CPU
+        tensor = tensor.float()
+
+        # Создаем тензор метки на CPU
         label_tensor = torch.tensor(label, dtype=torch.long)
 
         return tensor, label_tensor
