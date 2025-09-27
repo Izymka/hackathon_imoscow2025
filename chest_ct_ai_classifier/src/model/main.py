@@ -239,7 +239,7 @@ class CrossValidationTrainer:
                 checkpoint_callback,
                 early_stopping,
                 lr_monitor,
-                RichProgressBar(),
+                RichProgressBar(refresh_rate=0),  # прогресс-бар будет обновляться только в конце каждой эпохи, а не для каждого батча.
             ],
             accelerator=accelerator,
             devices=devices,
@@ -250,6 +250,8 @@ class CrossValidationTrainer:
             gradient_clip_val=self.cfg.gradient_clip_val,
             #precision=16 if accelerator == "gpu" else 32,  # mixed precision
             precision=32,
+            check_val_every_n_epoch=1,
+            num_sanity_val_steps=0,  # Отключаем проверку перед обучением
         )
 
         # Обучение
