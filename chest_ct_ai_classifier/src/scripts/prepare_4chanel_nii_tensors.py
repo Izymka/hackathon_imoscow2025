@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-prepare_ct_nii_multichannel.py
-
 Подготовка КТ-данных из NIfTI (.nii / .nii.gz) для MedicalNet с 4-канальным оконным представлением:
 - Лёгочное окно
 - Медиастинальное окно
@@ -9,7 +7,7 @@ prepare_ct_nii_multichannel.py
 - Окно мягких тканей
 
 Возвращает тензор [1, 4, 128, 128, 128], где каждый канал — результат оконной фильтрации.
-Без ресемплинга — используется адаптивный пуллинг.
+С применением изотропного ресемплинга перед адаптивным пулингом для сохранения анатомии.
 """
 
 import os
@@ -25,7 +23,10 @@ from monai.transforms import (
     CropForeground,
     ToTensor,
     Compose,
-    Lambda
+    Lambda,
+    Spacing,
+    Orientation,
+    ResizeWithPadOrCrop
 )
 import traceback
 from tqdm import tqdm
@@ -35,7 +36,8 @@ import torch.nn.functional as F
 # -------------------------------
 # Конфигурация
 # -------------------------------
-TARGET_OUTPUT_SHAPE = (128, 128, 128)  # Изменено на 128³
+TARGET_OUTPUT_SHAPE = (128, 128, 128)
+TARGET_SPACING_MM = 1.0  # Изотропный воксель в мм
 
 WINDOW_PRESETS = {
     'lung': {'center': -600, 'width': 1200},      # Легочное окно
@@ -117,10 +119,13 @@ def load_nii_file(nii_path: Path) -> MetaTensor:
 
         data_oriented = np.ascontiguousarray(data_oriented.copy())
 
+        # Извлекаем спейсинг из аффина
         spacing = np.sqrt(np.sum(affine_oriented[:3, :3] ** 2, axis=0))
+        # [X, Y, Z] -> [Z, Y, X] для [D, H, W]
+        spacing_dhw = [spacing[2], spacing[1], spacing[0]]
 
         meta_dict = {
-            'spacing': spacing.tolist(),
+            'spacing': spacing_dhw,
             'original_shape': data.shape,
             'oriented_shape': data_oriented.shape,
             'original_affine': affine,
@@ -136,17 +141,49 @@ def load_nii_file(nii_path: Path) -> MetaTensor:
 
 
 # -------------------------------
-# Трансформации MONAI
+# Трансформации MONAI с изотропией
 # -------------------------------
-def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
+def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE, target_spacing=TARGET_SPACING_MM):
+    """Трансформации с изотропным ресемплингом"""
+
+    def apply_isotropic_resampling_and_windows(x):
+        # x: MetaTensor [D, H, W] с метаданными
+        # Извлекаем спейсинг
+        original_spacing = x.meta.get('spacing', [1.0, 1.0, 1.0])
+        # MONAI ожидает [H_spacing, W_spacing, D_spacing], но у нас [D, H, W] => [Z, Y, X]
+        spacing_xyz = [original_spacing[2], original_spacing[1], original_spacing[0]]
+
+        # 1. Применяем ресемплинг к изотропному разрешению
+        resampler = Spacing(pixdim=target_spacing, mode="trilinear", padding_mode="border")
+        x_resampled = resampler(x, mode="trilinear", padding_mode="border")
+
+        # 2. Приводим к RAS ориентации (опционально, но полезно)
+        orienter = Orientation(axcodes="RAS")
+        x_oriented = orienter(x_resampled)
+
+        # 3. Обрезаем/дополняем до нужного размера
+        resizer = ResizeWithPadOrCrop(spatial_size=target_output_shape)
+        x_resized = resizer(x_oriented)
+
+        # 4. Применяем окна
+        image_np = x_resized.numpy()  # [D, H, W]
+
+        # Убедиться, что это 3D
+        if image_np.ndim == 4 and image_np.shape[0] == 1:
+            image_np = image_np[0]
+
+        windows_np = apply_all_windows(image_np)  # [4, D, H, W]
+
+        # 5. Преобразуем в тензор, добавляем batch и нормализуем
+        x_tensor = torch.from_numpy(windows_np).unsqueeze(0)  # [1, 4, D, H, W]
+        x_tensor = x_tensor * 2.0 - 1.0  # нормализация [-1, 1]
+
+        return x_tensor
+
     return Compose([
         EnsureChannelFirst(channel_dim="no_channel"),  # [D, H, W] → [1, D, H, W]
         CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        Lambda(lambda x: x.squeeze(0).cpu().numpy()),  # → [D, H, W] numpy
-        Lambda(apply_all_windows),  # → [4, D, H, W] numpy
-        Lambda(lambda x: torch.from_numpy(x).unsqueeze(0)),  # → [1, 4, D, H, W]
-        Lambda(lambda x: F.adaptive_avg_pool3d(x, target_output_shape)),  # → [1, 4, 128, 128, 128]
-        Lambda(lambda x: x * 2.0 - 1.0),  # [0,1] → [-1,1]
+        Lambda(apply_isotropic_resampling_and_windows),
         ToTensor()
     ])
 
@@ -241,7 +278,7 @@ def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) 
 # -------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare CT NIfTI volumes for MedicalNet with 4-channel windowing"
+        description="Prepare CT NIfTI volumes for MedicalNet with 4-channel windowing (isotropic resampling)"
     )
     parser.add_argument("--input", type=str, required=True,
                         help="Input directory with .nii or .nii.gz files (or subdirs)")
@@ -251,7 +288,7 @@ def main():
                         help="Search for .nii/.nii.gz files recursively")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
-    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_nii_multichannel.log",
+    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_nii_multichannel_isotropic.log",
                         help="Log file path")
 
     args = parser.parse_args()
@@ -280,10 +317,11 @@ def main():
 
     logger.info(f"Found {len(nii_files)} NIfTI file(s)")
     logger.info(f"Target output tensor shape: {(1, 4) + TARGET_OUTPUT_SHAPE}")
+    logger.info(f"Target spacing: {TARGET_SPACING_MM} mm (isotropic)")
     logger.info("✅ Using 4-channel windowing: lung, mediastinal, bone, soft_tissue")
     logger.info("✅ Orientation corrected (canonical + flip on H-axis)")
+    logger.info("✅ Isotropic resampling applied before adaptive pooling")
     logger.info("✅ Output intensity range: [-1, 1]")
-    logger.info("✅ No resampling — adaptive pooling used")
 
     results_summary = {
         'total': len(nii_files),
@@ -292,7 +330,7 @@ def main():
         'errors': [],
         'config': {
             'target_output_shape': TARGET_OUTPUT_SHAPE,
-            'resampling': 'none (adaptive pooling)',
+            'target_spacing_mm': TARGET_SPACING_MM,
             'window_presets': WINDOW_PRESETS,
             'output_intensity_range': [-1.0, 1.0]
         }
@@ -310,7 +348,7 @@ def main():
                 'error': result['error']
             })
 
-    report_file = output_dir / "nii_multichannel_processing_report.json"
+    report_file = output_dir / "nii_multichannel_processing_report_isotropic.json"
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(results_summary, f, indent=2, ensure_ascii=False)
 

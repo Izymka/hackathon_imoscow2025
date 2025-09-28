@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-prepare_ct_for_medicalnet_multichannel.py
-
 Подготовка КТ-данных для модели MedicalNet с 4-канальным представлением:
 - Лёгочное окно
 - Медиастинальное окно
@@ -9,7 +7,8 @@ prepare_ct_for_medicalnet_multichannel.py
 - Окно мягких тканей
 
 Возвращает тензор [1, 4, 128, 128, 128], где каждый канал — результат оконной фильтрации.
-Без ресемплинга — исходное разрешение сохраняется до адаптивного пулинга.
+Сохраняет анатомические пропорции: сначала ресемплирует к изотропному разрешению,
+затем применяет адаптивный пулинг.
 """
 
 import os
@@ -18,7 +17,7 @@ import logging
 from pathlib import Path
 import numpy as np
 import torch
-import gc  # Добавлено для управления памятью
+import gc
 import pydicom
 import SimpleITK as sitk
 from monai.data import MetaTensor
@@ -27,7 +26,10 @@ from monai.transforms import (
     CropForeground,
     ToTensor,
     Compose,
-    Lambda
+    Lambda,
+    Spacing,
+    Orientation,
+    ResizeWithPadOrCrop
 )
 import traceback
 from tqdm import tqdm
@@ -38,6 +40,7 @@ import torch.nn.functional as F
 # Конфигурация
 # -------------------------------
 TARGET_OUTPUT_SHAPE = (128, 128, 128)
+TARGET_SPACING_MM = 0.8  # Изотропный воксель в мм
 
 WINDOW_PRESETS = {
     'lung': {'center': -600, 'width': 1200},  # Легочное окно
@@ -90,38 +93,49 @@ def setup_logging(log_file: Path):
 
 
 # -------------------------------
-# Трансформации MONAI (исправлено)
+# Трансформации MONAI с изотропией
 # -------------------------------
-def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
-    """Трансформации без процентильной нормализации — только оконная фильтрация и пулинг"""
+def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE, target_spacing=TARGET_SPACING_MM):
+    """Трансформации с изотропным ресемплингом"""
 
-    def apply_windows_and_pool(x):
-        # Преобразование к numpy если нужно
-        if isinstance(x, torch.Tensor):
-            x = x.cpu().numpy()
+    def apply_isotropic_resampling_and_windows(x):
+        # x: MetaTensor [D, H, W] с метаданными
+        # Извлекаем спейсинг
+        original_spacing = x.meta.get('spacing', [1.0, 1.0, 1.0])
+        # MONAI ожидает [H_spacing, W_spacing, D_spacing], но у нас [D, H, W] => [Z, Y, X]
+        spacing_xyz = [original_spacing[2], original_spacing[1], original_spacing[0]]
 
-        # Убедиться, что это [D, H, W]
-        if x.ndim == 4 and x.shape[0] == 1:
-            x = x[0]
+        # 1. Применяем ресемплинг к изотропному разрешению
+        resampler = Spacing(pixdim=target_spacing, mode="trilinear", padding_mode="border")
+        x_resampled = resampler(x, mode="trilinear", padding_mode="border")
 
-        # Применить окна
-        x_windows = apply_all_windows(x)  # [4, D, H, W]
+        # 2. Приводим к RAS ориентации (опционально, но полезно)
+        orienter = Orientation(axcodes="RAS")
+        x_oriented = orienter(x_resampled)
 
-        # Преобразовать в тензор и добавить batch dimension
-        x_tensor = torch.from_numpy(x_windows).unsqueeze(0)  # [1, 4, D, H, W]
+        # 3. Обрезаем/дополняем до нужного размера
+        resizer = ResizeWithPadOrCrop(spatial_size=target_output_shape)
+        x_resized = resizer(x_oriented)
 
-        # Адаптивный пулинг
-        x_tensor = F.adaptive_avg_pool3d(x_tensor, target_output_shape)  # [1, 4, 128, 128, 128]
+        # 4. Применяем окна
+        image_np = x_resized.numpy()  # [D, H, W]
 
-        # Нормализация [-1, 1]
-        x_tensor = x_tensor * 2.0 - 1.0
+        # Убедиться, что это 3D
+        if image_np.ndim == 4 and image_np.shape[0] == 1:
+            image_np = image_np[0]
+
+        windows_np = apply_all_windows(image_np)  # [4, D, H, W]
+
+        # 5. Преобразуем в тензор, добавляем batch и нормализуем
+        x_tensor = torch.from_numpy(windows_np).unsqueeze(0)  # [1, 4, D, H, W]
+        x_tensor = x_tensor * 2.0 - 1.0  # нормализация [-1, 1]
 
         return x_tensor
 
     return Compose([
         EnsureChannelFirst(channel_dim="no_channel"),  # [D, H, W] -> [1, D, H, W]
         CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        Lambda(apply_windows_and_pool),
+        Lambda(apply_isotropic_resampling_and_windows),
         ToTensor()
     ])
 
@@ -201,6 +215,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
 
             image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
             original_spacing = sitk_image.GetSpacing()
+            # В SimpleITK: [X, Y, Z] -> нужно в [Z, Y, X] для [D, H, W]
             spacing_dhw = [original_spacing[2], original_spacing[1], original_spacing[0]]
 
             slope, intercept = 1.0, 0.0
@@ -429,7 +444,7 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
 # -------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare CT DICOM volumes for MedicalNet with 4-channel windowing")
+        description="Prepare CT DICOM volumes for MedicalNet with 4-channel windowing (isotropic resampling)")
     parser.add_argument("--input", type=str, required=True,
                         help="Input directory with patient subdirectories containing DICOM files")
     parser.add_argument("--output", type=str, required=True,
@@ -438,7 +453,7 @@ def main():
                         help="Enable verbose logging")
     parser.add_argument("--num-workers", type=int, default=0,
                         help="Number of parallel workers (default: 0)")
-    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_multichannel.log",
+    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_multichannel_isotropic.log",
                         help="Log file path")
 
     args = parser.parse_args()
@@ -461,8 +476,9 @@ def main():
 
     logger.info(f"Found {len(patient_dirs)} patient directories")
     logger.info(f"Target output tensor shape: {(1, 4) + TARGET_OUTPUT_SHAPE}")
+    logger.info(f"Target spacing: {TARGET_SPACING_MM} mm (isotropic)")
     logger.info("✅ Using 4-channel windowing: lung, mediastinal, bone, soft_tissue")
-    logger.info("✅ NO isotropic resampling — original resolution preserved")
+    logger.info("✅ Isotropic resampling applied before adaptive pooling")
     logger.info("✅ Output intensity range: [-1, 1]")
 
     results_summary = {
@@ -472,7 +488,7 @@ def main():
         'errors': [],
         'config': {
             'target_output_shape': TARGET_OUTPUT_SHAPE,
-            'resampling': 'none',
+            'target_spacing_mm': TARGET_SPACING_MM,
             'window_presets': WINDOW_PRESETS,
             'output_intensity_range': [-1.0, 1.0]
         }
@@ -490,7 +506,7 @@ def main():
                 'error': result['error']
             })
 
-    report_file = output_dir / "processing_report_multichannel.json"
+    report_file = output_dir / "processing_report_multichannel_isotropic.json"
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(results_summary, f, indent=2, ensure_ascii=False)
 
