@@ -19,7 +19,7 @@ from tqdm import tqdm
 import sys
 
 
-sys.path.append('model/outputs/weights')  # Добавьте путь к вашим моделям
+sys.path.append('model/outputs/weights')  # путь к модели
 from models import resnet
 
 

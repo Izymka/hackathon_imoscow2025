@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 import numpy as np
 import torch
+import gc  # Добавлено для управления памятью
 import pydicom
 import SimpleITK as sitk
 from monai.data import MetaTensor
@@ -36,14 +37,15 @@ import torch.nn.functional as F
 # -------------------------------
 # Конфигурация
 # -------------------------------
-TARGET_OUTPUT_SHAPE = (128, 128, 128)  # Новый целевой размер
+TARGET_OUTPUT_SHAPE = (128, 128, 128)
 
 WINDOW_PRESETS = {
-    'lung': {'center': -600, 'width': 1200},      # Легочное окно
+    'lung': {'center': -600, 'width': 1200},  # Легочное окно
     'mediastinal': {'center': 50, 'width': 400},  # Медиастинальное окно
-    'bone': {'center': 300, 'width': 1500},       # Костное окно
-    'soft_tissue': {'center': 40, 'width': 80}    # Мягкие ткани (узкое окно)
+    'bone': {'center': 300, 'width': 1500},  # Костное окно
+    'soft_tissue': {'center': 40, 'width': 80}  # Мягкие ткани (узкое окно)
 }
+
 
 # -------------------------------
 # Оконная фильтрация
@@ -88,18 +90,38 @@ def setup_logging(log_file: Path):
 
 
 # -------------------------------
-# Трансформации MONAI
+# Трансформации MONAI (исправлено)
 # -------------------------------
 def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
     """Трансформации без процентильной нормализации — только оконная фильтрация и пулинг"""
+
+    def apply_windows_and_pool(x):
+        # Преобразование к numpy если нужно
+        if isinstance(x, torch.Tensor):
+            x = x.cpu().numpy()
+
+        # Убедиться, что это [D, H, W]
+        if x.ndim == 4 and x.shape[0] == 1:
+            x = x[0]
+
+        # Применить окна
+        x_windows = apply_all_windows(x)  # [4, D, H, W]
+
+        # Преобразовать в тензор и добавить batch dimension
+        x_tensor = torch.from_numpy(x_windows).unsqueeze(0)  # [1, 4, D, H, W]
+
+        # Адаптивный пулинг
+        x_tensor = F.adaptive_avg_pool3d(x_tensor, target_output_shape)  # [1, 4, 128, 128, 128]
+
+        # Нормализация [-1, 1]
+        x_tensor = x_tensor * 2.0 - 1.0
+
+        return x_tensor
+
     return Compose([
         EnsureChannelFirst(channel_dim="no_channel"),  # [D, H, W] -> [1, D, H, W]
         CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        Lambda(lambda x: x.squeeze(0).cpu().numpy()),  # -> [D, H, W] numpy
-        Lambda(apply_all_windows),  # -> [4, D, H, W] numpy
-        Lambda(lambda x: torch.from_numpy(x).unsqueeze(0)),  # -> [1, 4, D, H, W]
-        Lambda(lambda x: F.adaptive_avg_pool3d(x, target_output_shape)),  # -> [1, 4, 128, 128, 128]
-        Lambda(lambda x: x * 2.0 - 1.0),  # [0,1] → [-1,1]
+        Lambda(apply_windows_and_pool),
         ToTensor()
     ])
 
@@ -108,7 +130,11 @@ def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
 # Валидация размеров
 # -------------------------------
 def validate_tensor_size(tensor, min_size=16):
-    shape = tensor.shape
+    if isinstance(tensor, MetaTensor):
+        shape = tensor.shape
+    else:
+        shape = tensor.shape
+
     if len(shape) == 3:
         d, h, w = shape
     elif len(shape) == 4 and shape[0] == 1:
@@ -122,11 +148,8 @@ def validate_tensor_size(tensor, min_size=16):
 
 
 # -------------------------------
-# Загрузка DICOM (остаётся без изменений)
+# Загрузка DICOM
 # -------------------------------
-# ... (вставьте сюда оригинальную функцию `load_dicom_series` из вашего скрипта без изменений)
-# Для краткости здесь не повторяю, но она должна остаться полностью как в вашем коде.
-
 def _load_single_dicom_file(single_file: Path) -> MetaTensor:
     ds = pydicom.dcmread(str(single_file), force=True)
     num_frames = int(getattr(ds, "NumberOfFrames", 1))
@@ -342,6 +365,11 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
     }
 
     try:
+        # Очистка памяти перед обработкой
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
         ct_meta_tensor = load_dicom_series(patient_dir)
         original_shape = ct_meta_tensor.shape
         result.update({
@@ -387,6 +415,12 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
             logging.error(f"❌ {patient_dir.name}: {e}")
             logging.debug(traceback.format_exc())
 
+    finally:
+        # Очистка памяти после обработки
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
     return result
 
 
@@ -402,8 +436,8 @@ def main():
                         help="Output directory for processed .pt tensor files")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
-    parser.add_argument("--num-workers", type=int, default=4,
-                        help="Number of parallel workers (default: 4)")
+    parser.add_argument("--num-workers", type=int, default=0,
+                        help="Number of parallel workers (default: 0)")
     parser.add_argument("--log-file", type=str, default="logs/prepare_ct_multichannel.log",
                         help="Log file path")
 
