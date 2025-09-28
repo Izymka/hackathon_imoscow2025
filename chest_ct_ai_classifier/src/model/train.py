@@ -28,6 +28,42 @@ def setup_logging(log_file='logs/train.log'):
     logger.addHandler(fh)
     return logger
 
+def build_optimizer(model, cfg):
+    """
+    Создает оптимизатор с разными learning rate
+    для новых и базовых слоев согласно конфигу.
+    """
+    if not cfg.use_differential_lr:
+        # обычный путь
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=cfg.learning_rate,
+            weight_decay=cfg.weight_decay
+        )
+
+    # ---------- группировка параметров ----------
+    # новые слои (размороженные для fine-tuning)
+    new_params = []
+    base_params = []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(layer in name for layer in cfg.new_layer_names):
+            new_params.append(p)
+        else:
+            base_params.append(p)
+
+    optimizer = torch.optim.Adam(
+        [
+            {"params": base_params,
+             "lr": cfg.learning_rate * cfg.base_lr_multiplier},
+            {"params": new_params,
+             "lr": cfg.learning_rate * cfg.new_layers_lr_multiplier}
+        ],
+        weight_decay=cfg.weight_decay
+    )
+    return optimizer
+
 
 def train(data_loader, model, optimizer, scheduler,
           total_epochs, save_interval, save_folder, sets):
@@ -121,16 +157,37 @@ if __name__ == '__main__':
     model, parameters = generate_model(sets)
 
     # === Настройка оптимизатора ===
+    # generate_model теперь может вернуть:
+    #   1) обычный iterable параметров (старый случай)
+    #   2) dict {'base_parameters': ..., 'new_parameters': ...}
+    #      если вы заранее пометили новые слои (fc/layer3/layer4)
     if isinstance(parameters, dict):
+        # --- DIFF-LR ---
+        # базовые слои учим медленно
+        base_lr = sets.learning_rate * getattr(sets, 'base_lr_multiplier', 0.1)
+        # новые слои (fc, layer3/4) учим быстрее
+        new_lr = sets.learning_rate * getattr(sets, 'new_layers_lr_multiplier', 1.0)
         params = [
             {'params': parameters['base_parameters'], 'lr': sets.learning_rate},
             {'params': parameters['new_parameters'], 'lr': sets.learning_rate * 100}
         ]
+        print(f"💡 Differential LR: base={base_lr:.2e}, new={new_lr:.2e}")
     else:
+        # если ничего не размораживали
         params = [{'params': list(parameters), 'lr': sets.learning_rate}]
+        print(f"💡 Single LR: {sets.learning_rate:.2e}")
 
-    optimizer = optim.SGD(params, momentum=0.9, weight_decay=1e-3)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+    # оптимизатор
+    optimizer = optim.SGD(
+        params,
+        momentum=0.9,
+        weight_decay=getattr(sets, 'weight_decay', 1e-3)
+    )
+    # планировщик (пример – экспоненциальный)
+    scheduler = optim.lr_scheduler.ExponentialLR(
+        optimizer,
+        gamma=getattr(sets, 'lr_gamma', 0.99)
+    )
 
     # === Загрузка чекпоинта (если есть) ===
     if sets.resume_path and os.path.isfile(sets.resume_path):

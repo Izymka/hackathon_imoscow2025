@@ -87,6 +87,18 @@ def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
     print("🔥 Размораживание FC слоя для обучения...")
     for param in new_fc.parameters():
         param.requires_grad = True
+        # 5. Размораживаем layer3 и layer4
+        print("🔥 Размораживание layer3 и layer4...")
+        if hasattr(model, 'module'):
+            for p in model.module.layer3.parameters():
+                p.requires_grad = True
+            for p in model.module.layer4.parameters():
+                p.requires_grad = True
+        else:
+            for p in model.layer3.parameters():
+                p.requires_grad = True
+            for p in model.layer4.parameters():
+                p.requires_grad = True
 
     # Возврат обучаемых параметров
     trainable_parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
