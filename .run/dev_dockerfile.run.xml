@@ -18,7 +18,7 @@
           <list>
             <DockerVolumeBindingImpl>
               <option name="containerPath" value="/workspace" />
-              <option name="hostPath" value="G:\Projects\hackathon_imoscow2025\chest_ct_ai_classifier" />
+              <option name="hostPath" value="G:\Projects\hackathon_imoscow2025\chest_ct_ai_classifier\src" />
             </DockerVolumeBindingImpl>
           </list>
         </option>
