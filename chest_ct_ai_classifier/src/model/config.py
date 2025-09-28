@@ -14,9 +14,9 @@ class ModelConfig:
     resnet_shortcut: str = "A"
 
     # ========== INPUT DIMENSIONS ==========
-    input_W: int = 256  # изменено с 128
-    input_H: int = 256  # изменено с 128  
-    input_D: int = 256  # изменено с 128
+    input_W: int = 128  # изменено с 128
+    input_H: int = 128  # изменено с 128
+    input_D: int = 128  # изменено с 128
 
     # ========== CLASSIFICATION PARAMETERS ==========
     n_seg_classes: int = 2  # бинарная классификация
