@@ -82,28 +82,20 @@ class MedicalClassificationModel(pl.LightningModule):
         else:
             self.class_weights = None
 
-        self.use_focal_loss = use_focal_loss
-        self.focal_alpha = focal_alpha
-        self.focal_gamma = focal_gamma
+        # Инициализация loss_fn — БЕЗ привязки к устройству!
+        if self.use_focal_loss:
+            self.loss_fn = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
+        else:
+            weight = self.class_weights if self.use_weighted_loss else None
+            self.loss_fn = nn.CrossEntropyLoss(weight=weight)  # weight может быть None или тензором
 
         # Инициализация метрик
         self._init_metrics()
-
         # Для хранения предсказаний и целей
         self.validation_step_outputs = []
         self.test_step_outputs = []
 
         #print(f"MedicalClassificationModel device: {self.device}", self.device)
-
-    def setup(self, stage: str):
-        """Вызывается автоматически Lightning для setup на правильном устройстве."""
-
-        # Создаем loss функции на правильном устройстве
-        if self.use_focal_loss:
-            self.loss_fn = FocalLoss(alpha=self.focal_alpha, gamma=self.focal_gamma)
-        else:
-            weight = self.class_weights if self.use_weighted_loss else None
-            self.loss_fn = nn.CrossEntropyLoss(weight=weight)
 
     def _init_metrics(self):
         """Инициализация торчевых метрик."""

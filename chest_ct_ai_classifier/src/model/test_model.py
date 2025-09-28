@@ -75,9 +75,11 @@ def load_model_checkpoint(checkpoint_path, config, device):
             name = k[7:]  # убираем 'module.'
         else:
             name = k
-        new_state_dict[name] = v
+        # Пропускаем всё, что относится к loss_fn
+        if not name.startswith('loss_fn'):
+            new_state_dict[name] = v
     
-    model.load_state_dict(new_state_dict)
+    model.load_state_dict(new_state_dict, strict=False)
     model = model.to(device)
     model.eval()
     
