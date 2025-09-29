@@ -89,6 +89,54 @@ def get_val_transforms() -> Compose:
     ])
 
 
+def test_inference_example():
+    """Пример тестирования inference."""
+    rprint("\n🔬 [bold blue]Тестирование inference модуля...[/bold blue]")
+
+    try:
+        from config import ModelConfig
+
+        # Создаем тестовую модель
+        cfg = ModelConfig()
+        cfg.input_D = 256
+        cfg.input_H = 256
+        cfg.input_W = 256
+        cfg.n_seg_classes = 2
+
+        # Тестовый тензор 256x256x256
+        test_tensor = torch.randn(1, 1, 256, 256, 256)
+        rprint(f"📊 Тестовый тензор: {test_tensor.shape}")
+
+        # Создание inference объекта (укажите путь к реальному чекпоинту)
+        checkpoint_path = "path/to/your/checkpoint.ckpt"  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ПУТЬ
+
+        if Path(checkpoint_path).exists():
+            inference = MedicalModelInference(
+                weights_path=checkpoint_path,
+                model_config=cfg
+            )
+
+            # Предсказание
+            prediction = inference.predict(test_tensor)
+            rprint(f"🎯 Результат предсказания: {prediction}")
+
+            # Батчевое предсказание
+            batch_tensor = torch.randn(2, 1, 256, 256, 256)
+            batch_predictions = inference.predict_batch(batch_tensor)
+            rprint(f"📦 Пакетные предсказания: {len(batch_predictions)} образцов")
+
+            rprint("✅ [bold green]Inference тестирование завершено успешно![/bold green]")
+        else:
+            rprint(f"⚠️ [yellow]Чекпоинт не найден: {checkpoint_path}[/yellow]")
+            rprint("   [yellow]Создаем тестовый inference объект...[/yellow]")
+
+            # Создаем тестовый inference с фейковым путем (для демонстрации интерфейса)
+            # В реальности используйте существующий чекпоинт
+
+    except Exception as e:
+        rprint(f"❌ [bold red]Ошибка inference тестирования:[/bold red] {str(e)}")
+        console.print_exception(show_locals=True)
+
 class CrossValidationTrainer:
     """Класс для проведения кросс-валидации."""
 
