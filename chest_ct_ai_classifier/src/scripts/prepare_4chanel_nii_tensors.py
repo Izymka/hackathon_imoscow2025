@@ -31,17 +31,18 @@ import traceback
 from tqdm import tqdm
 import json
 import torch.nn.functional as F
+import gc
 
 # -------------------------------
 # Конфигурация
 # -------------------------------
-TARGET_OUTPUT_SHAPE = (128, 128, 128)  # Изменено на 128³
+TARGET_OUTPUT_SHAPE = (128, 128, 128)
 
 WINDOW_PRESETS = {
-    'lung': {'center': -600, 'width': 1200},      # Легочное окно
-    'mediastinal': {'center': 50, 'width': 400},  # Медиастинальное окно
-    'bone': {'center': 300, 'width': 1500},       # Костное окно
-    'soft_tissue': {'center': 40, 'width': 80}    # Мягкие ткани (узкое окно)
+    'lung': {'center': -600, 'width': 1200},
+    'mediastinal': {'center': 50, 'width': 400},
+    'bone': {'center': 300, 'width': 1500},
+    'soft_tissue': {'center': 40, 'width': 80}
 }
 
 
@@ -49,7 +50,10 @@ WINDOW_PRESETS = {
 # Оконная фильтрация
 # -------------------------------
 def apply_window(image: np.ndarray, center: float, width: float) -> np.ndarray:
-    """Применяет оконную фильтрацию и нормализует в [0, 1]"""
+    """
+    Применяет оконную фильтрацию к изображению в HU.
+    Возвращает нормализованное изображение в диапазоне [0, 1].
+    """
     min_val = center - width // 2
     max_val = center + width // 2
     windowed = np.clip(image, min_val, max_val)
@@ -58,7 +62,9 @@ def apply_window(image: np.ndarray, center: float, width: float) -> np.ndarray:
 
 
 def apply_all_windows(image: np.ndarray) -> np.ndarray:
-    """Применяет 4 окна → [4, D, H, W]"""
+    """
+    Применяет 4 предустановленных окна и возвращает тензор [4, D, H, W]
+    """
     channels = []
     for preset in WINDOW_PRESETS.values():
         ch = apply_window(image, preset['center'], preset['width'])
@@ -67,19 +73,61 @@ def apply_all_windows(image: np.ndarray) -> np.ndarray:
 
 
 # -------------------------------
-# Логирование
+# Трансформации MONAI
 # -------------------------------
-def setup_logging(log_file: Path):
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
+def apply_windows_and_pool(x):
+    # Преобразование к numpy если нужно
+    if isinstance(x, torch.Tensor):
+        x = x.cpu().numpy()
+
+    # Убедиться, что это [D, H, W]
+    if x.ndim == 4 and x.shape[0] == 1:
+        x = x[0]
+
+    # Применить окна
+    x_windows = apply_all_windows(x)  # [4, D, H, W]
+
+    # Преобразовать в тензор и добавить batch dimension
+    x_tensor = torch.from_numpy(x_windows).unsqueeze(0)  # [1, 4, D, H, W]
+
+    # Адаптивный пулинг
+    x_tensor = F.adaptive_avg_pool3d(x_tensor, TARGET_OUTPUT_SHAPE)  # [1, 4, 128, 128, 128]
+
+    # Нормализация [-1, 1]
+    x_tensor = x_tensor * 2.0 - 1.0
+
+    return x_tensor
+
+
+def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
+    """Трансформации без процентильной нормализации — только оконная фильтрация и пулинг"""
+    return Compose([
+        EnsureChannelFirst(channel_dim="no_channel"),  # [D, H, W] -> [1, D, H, W]
+        CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
+        Lambda(apply_windows_and_pool),
+        ToTensor()
+    ])
+
+
+# -------------------------------
+# Валидация размеров
+# -------------------------------
+def validate_tensor_size(tensor, min_size=16):
+    if isinstance(tensor, MetaTensor):
+        shape = tensor.shape
+    else:
+        shape = tensor.shape
+
+    if len(shape) == 3:
+        d, h, w = shape
+    elif len(shape) == 4 and shape[0] == 1:
+        d, h, w = shape[1], shape[2], shape[3]
+    else:
+        raise ValueError(f"Unexpected tensor shape: {shape}")
+
+    if min(d, h, w) < min_size:
+        raise ValueError(f"Tensor too small: {(d, h, w)}, minimum size: {min_size}")
+    return tensor
 
 
 # -------------------------------
@@ -95,26 +143,33 @@ def load_nii_file(nii_path: Path) -> MetaTensor:
         data = nii_img.get_fdata().astype(np.float32)
         affine = nii_img.affine
 
-        # Приводим к канонической ориентации
+        # Определяем ориентацию и корректируем оси
         img_oriented = nib.as_closest_canonical(nii_img)
         data_oriented = img_oriented.get_fdata().astype(np.float32)
         affine_oriented = img_oriented.affine
 
         if data_oriented.ndim == 3:
-            # (x, y, z) → (z, y, x) → (D, H, W)
-            data_oriented = np.transpose(data_oriented, (2, 1, 0))
-            # Исправление: отражение по оси H (вторая ось)
-            data_oriented = np.flip(data_oriented, axis=1)
+            # (x, y, z) -> (z, y, x) для MedicalNet (D, H, W)
+            data_oriented = np.transpose(data_oriented, (2, 1, 0))  # (z, y, x)
+
+            # ИСПРАВЛЕНИЕ: Пациент "лежит на потолке" → переворачиваем каждый срез по вертикали
+            # Ось Y в MedicalNet - это вторая ось (индекс 1) в (D, H, W)
+            # После транспонирования (z, y, x), ось Y - это вторая ось (axis=1)
+            data_oriented = np.flip(data_oriented, axis=1)  # отражаем по оси H (высота)
+
         elif data_oriented.ndim == 4:
             if data_oriented.shape[-1] in (1, 3):
                 data_oriented = data_oriented[..., 0]
+                data_oriented = np.transpose(data_oriented, (2, 1, 0))
+                data_oriented = np.flip(data_oriented, axis=1)
             else:
                 data_oriented = data_oriented[:, :, :, 0]
-            data_oriented = np.transpose(data_oriented, (2, 1, 0))
-            data_oriented = np.flip(data_oriented, axis=1)
+                data_oriented = np.transpose(data_oriented, (2, 1, 0))
+                data_oriented = np.flip(data_oriented, axis=1)
         else:
             raise ValueError(f"Unsupported dimension: {data_oriented.ndim}")
 
+        # ИСПРАВЛЕНИЕ: Создаем копию массива, чтобы избежать отрицательных стридов
         data_oriented = np.ascontiguousarray(data_oriented.copy())
 
         spacing = np.sqrt(np.sum(affine_oriented[:3, :3] ** 2, axis=0))
@@ -136,40 +191,23 @@ def load_nii_file(nii_path: Path) -> MetaTensor:
 
 
 # -------------------------------
-# Трансформации MONAI
+# Настройка логирования
 # -------------------------------
-def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE):
-    return Compose([
-        EnsureChannelFirst(channel_dim="no_channel"),  # [D, H, W] → [1, D, H, W]
-        CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        Lambda(lambda x: x.squeeze(0).cpu().numpy()),  # → [D, H, W] numpy
-        Lambda(apply_all_windows),  # → [4, D, H, W] numpy
-        Lambda(lambda x: torch.from_numpy(x).unsqueeze(0)),  # → [1, 4, D, H, W]
-        Lambda(lambda x: F.adaptive_avg_pool3d(x, target_output_shape)),  # → [1, 4, 128, 128, 128]
-        Lambda(lambda x: x * 2.0 - 1.0),  # [0,1] → [-1,1]
-        ToTensor()
-    ])
-
-
-# -------------------------------
-# Валидация размера
-# -------------------------------
-def validate_tensor_size(tensor, min_size=16):
-    shape = tensor.shape
-    if len(shape) == 3:
-        d, h, w = shape
-    elif len(shape) == 4 and shape[0] == 1:
-        d, h, w = shape[1], shape[2], shape[3]
-    else:
-        raise ValueError(f"Unexpected tensor shape: {shape}")
-
-    if min(d, h, w) < min_size:
-        raise ValueError(f"Tensor too small: {(d, h, w)}, minimum size: {min_size}")
-    return tensor
+def setup_logging(log_file: Path):
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
 # -------------------------------
-# Обработка одного NIfTI-файла
+# Обработка одного пациента
 # -------------------------------
 def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) -> dict:
     result = {
@@ -178,9 +216,8 @@ def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) 
         'error': None,
         'output_path': None,
         'original_shape': None,
-        'oriented_shape': None,
         'final_shape': None,
-        'spacing': None,
+        'original_spacing': None,
         'hu_range_input': None,
         'value_range_output': None,
         'mean': None,
@@ -188,16 +225,21 @@ def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) 
     }
 
     try:
+        # Очистка памяти перед обработкой
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
         ct_meta_tensor = load_nii_file(nii_path)
+        original_shape = ct_meta_tensor.shape
         result.update({
-            'original_shape': ct_meta_tensor.meta.get('original_shape'),
-            'oriented_shape': ct_meta_tensor.shape,
-            'spacing': ct_meta_tensor.meta.get('spacing'),
+            'original_shape': original_shape,
+            'original_spacing': ct_meta_tensor.meta.get('original_spacing'),
             'hu_range_input': ct_meta_tensor.meta.get('hu_range')
         })
 
         if verbose:
-            logging.info(f"Loaded {nii_path.name}: oriented shape {ct_meta_tensor.shape}")
+            logging.info(f"Loaded {nii_path.name}: {original_shape}")
 
         validated_tensor = validate_tensor_size(ct_meta_tensor)
         transform = get_transforms()
@@ -233,6 +275,12 @@ def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) 
             logging.error(f"❌ {nii_path.name}: {e}")
             logging.debug(traceback.format_exc())
 
+    finally:
+        # Очистка памяти после обработки
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
     return result
 
 
@@ -241,14 +289,11 @@ def process_single_nii(nii_path: Path, output_dir: Path, verbose: bool = False) 
 # -------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare CT NIfTI volumes for MedicalNet with 4-channel windowing"
-    )
+        description="Prepare CT NIfTI volumes for MedicalNet with 4-channel windowing")
     parser.add_argument("--input", type=str, required=True,
-                        help="Input directory with .nii or .nii.gz files (or subdirs)")
+                        help="Input directory with .nii or .nii.gz files")
     parser.add_argument("--output", type=str, required=True,
                         help="Output directory for processed .pt tensor files")
-    parser.add_argument("--recursive", action="store_true",
-                        help="Search for .nii/.nii.gz files recursively")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     parser.add_argument("--log-file", type=str, default="logs/prepare_ct_nii_multichannel.log",
@@ -260,28 +305,27 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger = setup_logging(Path(args.log_file))
+    log_file = Path(args.log_file)
+    logger = setup_logging(log_file)
 
     if not input_dir.exists():
         logger.error(f"Input directory does not exist: {input_dir}")
         return
 
     # Поиск NIfTI-файлов
-    pattern = "**/*.nii*" #if args.recursive else "*.nii*"
-    all_files = input_dir.glob(pattern)
     nii_files = [
-        f for f in all_files
-        if f.is_file() and (f.suffix == '.nii' or f.suffixes[-2:] == ['.nii', '.gz'])
+        f for f in input_dir.rglob("*")
+        if f.is_file() and (f.suffix == '.nii' or f.suffixes[-1] == '.gz' and f.stem.endswith('.nii'))
     ]
 
     if not nii_files:
-        logger.error(f"No .nii or .nii.gz files found in {input_dir} (recursive={args.recursive})")
+        logger.error(f"No .nii or .nii.gz files found in {input_dir}")
         return
 
     logger.info(f"Found {len(nii_files)} NIfTI file(s)")
     logger.info(f"Target output tensor shape: {(1, 4) + TARGET_OUTPUT_SHAPE}")
     logger.info("✅ Using 4-channel windowing: lung, mediastinal, bone, soft_tissue")
-    logger.info("✅ Orientation corrected (canonical + flip on H-axis)")
+    logger.info("✅ Orientation corrected (canonical + flipped)")
     logger.info("✅ Output intensity range: [-1, 1]")
     logger.info("✅ No resampling — adaptive pooling used")
 
@@ -292,7 +336,7 @@ def main():
         'errors': [],
         'config': {
             'target_output_shape': TARGET_OUTPUT_SHAPE,
-            'resampling': 'none (adaptive pooling)',
+            'resampling': 'none',
             'window_presets': WINDOW_PRESETS,
             'output_intensity_range': [-1.0, 1.0]
         }
@@ -310,7 +354,7 @@ def main():
                 'error': result['error']
             })
 
-    report_file = output_dir / "nii_multichannel_processing_report.json"
+    report_file = output_dir / "nii_processing_report_multichannel.json"
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(results_summary, f, indent=2, ensure_ascii=False)
 
