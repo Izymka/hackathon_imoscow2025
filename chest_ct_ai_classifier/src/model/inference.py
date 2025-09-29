@@ -5,8 +5,8 @@ import numpy as np
 from typing import Union, List, Dict, Optional
 from pathlib import Path
 from omegaconf import OmegaConf
-from model_generator import generate_model
-from lightning_module import MedicalClassificationModel
+from .model_generator import generate_model
+from .lightning_module import MedicalClassificationModel
 import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)

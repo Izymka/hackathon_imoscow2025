@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Копирование и установка зависимостей
 COPY ../chest_ct_ai_classifier/src/requirements.txt /app/requirements.txt
 
+RUN pip install torch==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu
 
 RUN pip install --upgrade pip && \
     pip install -r /app/requirements.txt
