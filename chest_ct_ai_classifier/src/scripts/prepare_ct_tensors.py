@@ -3,7 +3,7 @@
 prepare_ct_for_medicalnet.py
 
 Подготовка КТ-данных для модели MedicalNet с сохранением исходного разрешения.
-Возвращает тензоры [1, 1, 128, 128, 128] с адаптивной процентильной нормализацией [-1, 1].
+Возвращает тензоры [1, 1, 256, 256, 256] с адаптивной процентильной нормализацией [-1, 1].
 Без ресемплинга — исходное разрешение в плоскости и реальная толщина среза сохраняются.
 """
 
@@ -116,41 +116,77 @@ def validate_tensor_size(tensor, min_size=16):
 
 
 # -------------------------------
-# Загрузка DICOM (остаётся без изменений)
+# Загрузка DICOM (исправлено для обработки многофреймовых файлов)
 # -------------------------------
 def _load_single_dicom_file(single_file: Path) -> MetaTensor:
+    """Загрузка однофреймового или многофреймового DICOM файла"""
     ds = pydicom.dcmread(str(single_file), force=True)
     num_frames = int(getattr(ds, "NumberOfFrames", 1))
 
     if num_frames > 1:
-        pixel_array = ds.pixel_array
+        # Многофреймовый DICOM
+        pixel_array = ds.pixel_array  # Shape: (frames, rows, cols) or (frames, rows, cols, channels)
+
+        # Убедимся, что массив 3D
+        if pixel_array.ndim == 4 and pixel_array.shape[-1] in (1, 3):
+            pixel_array = pixel_array[..., 0]  # Убираем канал если он есть
+        elif pixel_array.ndim != 3:
+            raise ValueError(f"Unexpected pixel_array shape: {pixel_array.shape}")
+
+        # Получаем спейсинг
+        pixel_spacing = getattr(ds, "PixelSpacing", [1.0, 1.0])
+        slice_spacing = getattr(ds, "SpacingBetweenFrames", 1.0)
+        if slice_spacing == 1.0:
+            slice_spacing = getattr(ds, "SliceThickness", 1.0)
+
         spacing = [
-            float(getattr(ds, "PixelSpacing", [1.0, 1.0])[0]),
-            float(getattr(ds, "PixelSpacing", [1.0, 1.0])[1]),
-            float(getattr(ds, "SpacingBetweenSlices", 1.0)),
+            float(slice_spacing),
+            float(pixel_spacing[0]),
+            float(pixel_spacing[1])
         ]
-        tensor = torch.from_numpy(pixel_array.astype(np.float32))
-        tensor = tensor.unsqueeze(0)
+
+        # Применяем рескейл если нужно
+        slope = float(getattr(ds, 'RescaleSlope', 1.0))
+        intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+        pixel_array = pixel_array.astype(np.float32)
+        if slope != 1.0 or intercept != 0.0:
+            pixel_array = pixel_array * slope + intercept
+
+        tensor = torch.from_numpy(pixel_array)
         return MetaTensor(tensor, affine=np.diag(spacing + [1]))
     else:
-        pixel_array = ds.pixel_array
+        # Однофреймовый DICOM
+        pixel_array = ds.pixel_array.astype(np.float32)
+        pixel_spacing = getattr(ds, "PixelSpacing", [1.0, 1.0])
+        slice_thickness = float(getattr(ds, "SliceThickness", 1.0))
+
         spacing = [
-            float(getattr(ds, "PixelSpacing", [1.0, 1.0])[0]),
-            float(getattr(ds, "PixelSpacing", [1.0, 1.0])[1]),
-            1.0,
+            float(slice_thickness),
+            float(pixel_spacing[0]),
+            float(pixel_spacing[1])
         ]
-        tensor = torch.from_numpy(pixel_array.astype(np.float32))
-        tensor = tensor.unsqueeze(0).unsqueeze(0)
+
+        # Применяем рескейл если нужно
+        slope = float(getattr(ds, 'RescaleSlope', 1.0))
+        intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+        if slope != 1.0 or intercept != 0.0:
+            pixel_array = pixel_array * slope + intercept
+
+        tensor = torch.from_numpy(pixel_array)
+        tensor = tensor.unsqueeze(0)  # Добавляем размерность для совместимости
         return MetaTensor(tensor, affine=np.diag(spacing + [1]))
 
 
 def load_dicom_series(dicom_folder: Path) -> MetaTensor:
+    """Загрузка DICOM серии - как многофреймовой, так и многофайлового формата"""
     try:
         files = sorted([p for p in dicom_folder.iterdir()
                         if p.is_file() and not p.name.startswith('.')])
+
         if len(files) == 1:
             return _load_single_dicom_file(files[0])
 
+        # Попытка загрузки через SimpleITK как серии файлов
         reader = sitk.ImageSeriesReader()
         series_IDs = reader.GetGDCMSeriesIDs(str(dicom_folder))
         if series_IDs:
@@ -171,6 +207,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
             original_spacing = sitk_image.GetSpacing()
             spacing_dhw = [original_spacing[2], original_spacing[1], original_spacing[0]]
 
+            # Применяем рескейл если нужно
             slope, intercept = 1.0, 0.0
             try:
                 dcm = pydicom.dcmread(series_file_names[0], stop_before_pixels=True)
@@ -180,7 +217,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
                 pass
 
             if slope != 1.0 or intercept != 0.0:
-                image_array = image_array * slope - intercept
+                image_array = image_array * slope + intercept
 
             meta_dict = {
                 'spacing': spacing_dhw,
@@ -200,67 +237,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
 
         if len(files) == 1:
             single = files[0]
-            ds = pydicom.dcmread(str(single), force=True)
-            num_frames = int(getattr(ds, 'NumberOfFrames', 1))
-            if num_frames > 1:
-                pixel_array = ds.pixel_array
-                image_array = np.asarray(pixel_array).astype(np.float32)
-                if image_array.ndim == 4 and image_array.shape[-1] in (1, 3):
-                    image_array = image_array[..., 0] if image_array.shape[-1] == 1 else image_array[..., 0]
-                if image_array.ndim != 3:
-                    raise ValueError(f"Unexpected shape: {image_array.shape}")
-
-                slope = float(getattr(ds, 'RescaleSlope', 1.0))
-                intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
-                if slope != 1.0 or intercept != 0.0:
-                    image_array = image_array * slope - intercept
-
-                pixel_spacing = (1.0, 1.0)
-                if hasattr(ds, 'PixelSpacing'):
-                    ps = ds.PixelSpacing
-                    pixel_spacing = (float(ps[0]), float(ps[1]))
-                slice_spacing = 1.0
-                if hasattr(ds, 'SpacingBetweenFrames'):
-                    slice_spacing = float(ds.SpacingBetweenFrames)
-                elif hasattr(ds, 'SliceThickness'):
-                    slice_spacing = float(ds.SliceThickness)
-
-                spacing_dhw = [slice_spacing, pixel_spacing[0], pixel_spacing[1]]
-                meta_dict = {
-                    'spacing': spacing_dhw,
-                    'original_shape': image_array.shape,
-                    'original_spacing': spacing_dhw,
-                    'filename_or_obj': str(single),
-                    'rescale_slope': slope,
-                    'rescale_intercept': intercept,
-                    'hu_range': (float(image_array.min()), float(image_array.max())),
-                    'source': 'pydicom_multiframe'
-                }
-                return MetaTensor(image_array, meta=meta_dict)
-            else:
-                pixel_array = ds.pixel_array.astype(np.float32)
-                image_array = np.expand_dims(pixel_array, axis=0) if pixel_array.ndim == 2 else pixel_array
-                slope = float(getattr(ds, 'RescaleSlope', 1.0))
-                intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
-                if slope != 1.0 or intercept != 0.0:
-                    image_array = image_array * slope - intercept
-                pixel_spacing = (1.0, 1.0)
-                if hasattr(ds, 'PixelSpacing'):
-                    ps = ds.PixelSpacing
-                    pixel_spacing = (float(ps[0]), float(ps[1]))
-                slice_thickness = float(getattr(ds, 'SliceThickness', 1.0))
-                spacing_dhw = [slice_thickness, pixel_spacing[0], pixel_spacing[1]]
-                meta_dict = {
-                    'spacing': spacing_dhw,
-                    'original_shape': image_array.shape,
-                    'original_spacing': spacing_dhw,
-                    'filename_or_obj': str(single),
-                    'rescale_slope': slope,
-                    'rescale_intercept': intercept,
-                    'hu_range': (float(image_array.min()), float(image_array.max())),
-                    'source': 'pydicom_singlefile'
-                }
-                return MetaTensor(image_array, meta=meta_dict)
+            return _load_single_dicom_file(single)
 
         # Fallback: сборка по InstanceNumber
         dicom_files = []
@@ -296,7 +273,7 @@ def load_dicom_series(dicom_folder: Path) -> MetaTensor:
             pass
 
         if slope != 1.0 or intercept != 0.0:
-            image_array = image_array * slope - intercept
+            image_array = image_array * slope + intercept
 
         meta_dict = {
             'spacing': spacing_dhw,
@@ -347,7 +324,7 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
         validated_tensor = validate_tensor_size(ct_meta_tensor)
         transform = get_transforms()
         transformed_tensor = transform(validated_tensor)
-        final_tensor = transformed_tensor.unsqueeze(0)  # [1, C, D, H, W] → [1, 1, 128, 128, 128]
+        final_tensor = transformed_tensor.unsqueeze(0)  # [1, C, D, H, W] → [1, 1, 256, 256, 256]
 
         expected_shape = (1, 1) + TARGET_OUTPUT_SHAPE
         if final_tensor.shape != expected_shape:

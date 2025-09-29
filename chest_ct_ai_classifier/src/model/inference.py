@@ -21,7 +21,7 @@ class MedicalModelInference:
 
     def __init__(self,
                  weights_path: str,
-                 model_config: OmegaConf,
+                 model_config,
                  device: Optional[str] = None,
                  use_half_precision: bool = False):
         """
@@ -34,6 +34,8 @@ class MedicalModelInference:
             use_half_precision: использовать ли half precision (float16) для ускорения
         """
         self.weights_path = Path(weights_path)
+
+        # Сохраняем оригинальный конфиг ModelConfig
         self.model_config = model_config
         self.use_half_precision = use_half_precision
 
@@ -55,16 +57,28 @@ class MedicalModelInference:
             self._half_precision = False
 
         print(f"✅ Inference модуль инициализирован на устройстве: {self.device}")
-        print(f"📊 Ожидаемый входной размер: 1, 1, 256, 256, 256")
+        print(
+            f"📊 Ожидаемый входной размер: 1, 1, {self.model_config.input_D}, {self.model_config.input_H}, {self.model_config.input_W}")
         print(f"🎯 Количество классов: {self.model_config.n_seg_classes}")
 
     def _load_model(self):
         """Загрузка и инициализация модели."""
-        # Преобразуем config в namespace для генератора модели
-        config_dict = OmegaConf.to_container(self.model_config)
-        config_dict['gpu_id'] = [0] if torch.cuda.is_available() else []
-        config_dict['phase'] = 'test'
-        config_dict['no_cuda'] = (self.device == 'cpu')
+        # Преобразуем ModelConfig в OmegaConf
+        config_dict = {
+            'model': self.model_config.model,
+            'model_depth': self.model_config.model_depth,
+            'resnet_shortcut': self.model_config.resnet_shortcut,
+            'input_W': self.model_config.input_W,
+            'input_H': self.model_config.input_H,
+            'input_D': self.model_config.input_D,
+            'n_seg_classes': self.model_config.n_seg_classes,
+            'pretrain_path': self.model_config.pretrain_path if self.model_config.use_pretrained else None,
+            'no_cuda': (self.device == 'cpu'),
+            'gpu_id': [0] if torch.cuda.is_available() else [],
+            'phase': 'test'
+        }
+
+        omega_config = OmegaConf.create(config_dict)
 
         from argparse import Namespace
         args = Namespace(**config_dict)
@@ -116,12 +130,13 @@ class MedicalModelInference:
         batch_size, channels, depth, height, width = tensor.shape
 
         # Проверяем размеры
-        expected_shape = (1, 1, 256, 256, 256)
+        expected_shape = (1, 1, self.model_config.input_D, self.model_config.input_H, self.model_config.input_W)
         if (channels, depth, height, width) != expected_shape[1:]:
             raise ValueError(
                 f"Ожидается тензор формы {expected_shape}, "
                 f"получено {tensor.shape}. "
-                f"Ожидаемые размеры: channels=1, depth=256, height=256, width=256"
+                f"Ожидаемые размеры: channels=1, depth={self.model_config.input_D}, "
+                f"height={self.model_config.input_H}, width={self.model_config.input_W}"
             )
 
         # Перемещаем на нужное устройство и тип данных
@@ -139,7 +154,7 @@ class MedicalModelInference:
         Выполняет предсказание на одном тензоре.
 
         Args:
-            input_tensor: тензор формы (1, 1, 256, 256, 256)
+            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
 
         Returns:
             Dict с результатами предсказания:
@@ -182,7 +197,7 @@ class MedicalModelInference:
         Выполняет предсказание на батче тензоров.
 
         Args:
-            batch_tensor: тензор формы (B, 1, 256, 256, 256)
+            batch_tensor: тензор формы (B, 1, input_D, input_H, input_W)
 
         Returns:
             List[Dict] - результаты для каждого элемента в батче
@@ -228,7 +243,7 @@ class MedicalModelInference:
         Возвращает только вероятности классов.
 
         Args:
-            input_tensor: тензор формы (1, 1, 256, 256, 256)
+            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
 
         Returns:
             np.ndarray: вероятности всех классов
@@ -241,7 +256,7 @@ class MedicalModelInference:
         Возвращает только предсказанный класс.
 
         Args:
-            input_tensor: тензор формы (1, 1, 256, 256, 256)
+            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
 
         Returns:
             int: предсказанный класс
@@ -263,7 +278,8 @@ if __name__ == "__main__":
 
     # Создаем inference модуль
     inference = MedicalModelInference(
-        weights_path="path/to/your/checkpoint.ckpt",  # укажите путь к чекпоинту
+        weights_path="/model/outputs/weights/best-epoch=00-val_f1=0.6222-val_auroc=0.6858.ckpt",
+
         model_config=config
     )
 
