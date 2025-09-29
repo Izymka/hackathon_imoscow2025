@@ -63,7 +63,7 @@ class ModelConfig:
 
     # ========== CROSS-VALIDATION ==========
     use_cross_validation: bool = True
-    n_splits: int = 5
+    n_splits: int = 2
     cv_random_state: int = 42
     stratified_cv: bool = True  # стратифицированная кросс-валидация
 

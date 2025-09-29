@@ -169,7 +169,7 @@ def _is_dicom(path: str) -> bool:
         return False
 
 
-def parse_dicom(dicom_dir: str|Path) -> DicomSummary | None:
+def parse_dicom(dicom_dir: str|Path, header_only: bool = False) -> DicomSummary | None:
     """
     Parse a directory with CT DICOMs and return a comprehensive DicomSummary with:
       - study/series identifiers, type (enhanced vs standard), sop class uid
@@ -429,7 +429,9 @@ def parse_dicom(dicom_dir: str|Path) -> DicomSummary | None:
     rescale_slopes_series = None
     rescale_intercepts_series = None
 
-    if is_single_file and is_multi_frame_file:
+    if header_only:
+        pass
+    elif is_single_file and is_multi_frame_file:
         # Enhanced multi-frame
         series_file_names = [f"frame_{i:04d}" for i in range(n_frames)]
         instance_numbers = [i + 1 for i in range(n_frames)]
