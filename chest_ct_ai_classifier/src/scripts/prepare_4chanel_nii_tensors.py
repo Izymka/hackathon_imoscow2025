@@ -267,7 +267,7 @@ def main():
         return
 
     # Поиск NIfTI-файлов
-    pattern = "**/*.nii*" if args.recursive else "*.nii*"
+    pattern = "**/*.nii*" #if args.recursive else "*.nii*"
     all_files = input_dir.glob(pattern)
     nii_files = [
         f for f in all_files
