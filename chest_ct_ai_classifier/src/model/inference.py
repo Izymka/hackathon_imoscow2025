@@ -49,12 +49,7 @@ class MedicalModelInference:
         self.model = self._load_model()
         self.model.eval()
 
-        # Установка half precision если нужно
-        if self.use_half_precision and self.device == 'cuda':
-            self.model.half()
-            self._half_precision = True
-        else:
-            self._half_precision = False
+        self._half_precision = False
 
         print(f"✅ Inference модуль инициализирован на устройстве: {self.device}")
         print(
@@ -102,6 +97,7 @@ class MedicalModelInference:
                 num_classes=self.model_config.n_seg_classes
             )
             model = lightning_model.model
+            print('Lightning чекпоинт загружен')
         else:
             # Это обычный state_dict
             model.load_state_dict(checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint)
@@ -142,11 +138,6 @@ class MedicalModelInference:
         # Перемещаем на нужное устройство и тип данных
         tensor = tensor.to(self.device)
 
-        if self._half_precision:
-            tensor = tensor.half()
-        else:
-            tensor = tensor.float()
-
         return tensor
 
     def predict(self, input_tensor: torch.Tensor) -> Dict[str, Union[float, int, np.ndarray]]:
@@ -166,7 +157,7 @@ class MedicalModelInference:
         with torch.no_grad():
             # Валидация входа
             input_tensor = self._validate_input_tensor(input_tensor)
-
+            print('Валидация входного тензора пройдена')
             # Выполняем предсказание
             if self._half_precision:
                 with torch.cuda.amp.autocast():
