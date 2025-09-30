@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-prepare_ct_nii_for_medicalnet.py
 
-Подготовка КТ-данных из NIfTI (.nii / .nii.gz) для модели MedicalNet.
-Сохраняет тензоры [1, 1, 256, 256, 256] с адаптивной нормализацией по ху с использованием процентилей.
-Без ресемплинга — используется адаптивный пуллинг вместо изменения разрешения.
+Подготовка КТ-данных для модели MedicalNet с изотропным ресемплингом до 1x1x1 мм.
+Поддержка DICOM и NIfTI форматов.
+Возвращает тензоры [1, 1, 256, 256, 256] с фиксированной нормализацией [-1000, 600] → [-1, 1].
+Полностью без MONAI - использует только SimpleITK, NumPy и PyTorch.
 """
 
 import os
@@ -13,17 +13,8 @@ import logging
 from pathlib import Path
 import numpy as np
 import torch
-import nibabel as nib
-from monai.data import MetaTensor
-from monai.transforms import (
-    EnsureChannelFirst,
-    ScaleIntensityRange,
-    CropForeground,
-    NormalizeIntensity,
-    ToTensor,
-    Compose,
-    Lambda
-)
+import pydicom
+import SimpleITK as sitk
 import traceback
 from tqdm import tqdm
 import json
@@ -32,17 +23,17 @@ import torch.nn.functional as F
 # -------------------------------
 # Конфигурация
 # -------------------------------
-TARGET_OUTPUT_SHAPE = (128, 128, 128)
-HU_MIN = -1000
-HU_MAX = 1000
-PERCENTILE_MIN = 1  # 1-й процентиль
-PERCENTILE_MAX = 99  # 99-й процентиль
+TARGET_OUTPUT_SHAPE = (256, 256, 256)  # Желаемый выходной размер
+TARGET_SPACING = (1.0, 1.0, 1.0)  # Изотропное разрешение 1x1x1 мм
+HU_MIN = -1000.0  # Минимальное значение для КТ
+HU_MAX = 600.0  # Максимальное значение для КТ
 
 
 # -------------------------------
-# Логирование
+# Настройка логирования
 # -------------------------------
 def setup_logging(log_file: Path):
+    """Настройка логирования в файл и консоль"""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -56,201 +47,293 @@ def setup_logging(log_file: Path):
 
 
 # -------------------------------
-# Адаптивная нормализация по процентилям
+# Вспомогательные функции для трансформаций
 # -------------------------------
-def adaptive_hu_normalization_by_percentiles(data, percentile_min=PERCENTILE_MIN, percentile_max=PERCENTILE_MAX):
-    """
-    Адаптивная нормализация данных КТ по ху с использованием процентилей.
+def ensure_channel_first(image_array: np.ndarray) -> np.ndarray:
+    """Добавляет channel dimension если его нет"""
+    if image_array.ndim == 3:
+        return image_array[np.newaxis, :, :, :]  # [C, D, H, W]
+    elif image_array.ndim == 4:
+        return image_array
+    else:
+        raise ValueError(f"Unexpected array dimension: {image_array.ndim}")
 
-    Args:
-        data: numpy array с данными КТ
-        percentile_min: нижний процентиль (например, 1 для 1-го процентиля)
-        percentile_max: верхний процентиль (например, 99 для 99-го процентиля)
 
-    Returns:
-        нормализованные данные в диапазоне [0, 1]
-    """
-    # Вычисляем процентили
-    p_min = np.percentile(data, percentile_min)
-    p_max = np.percentile(data, percentile_max)
+def resample_image_sitk(sitk_image, target_spacing, target_size=None, is_label=False):
+    """Ресемплинг изображения до целевого разрешения"""
+    original_size = sitk_image.GetSize()
+    original_spacing = sitk_image.GetSpacing()
 
-    # Обрабатываем случай, когда p_min >= p_max (все значения одинаковы)
-    if p_max <= p_min:
-        # Если все значения одинаковы, возвращаем константный тензор
-        if p_min == 0:
-            return np.zeros_like(data, dtype=np.float32)
-        else:
-            # Используем безопасное деление
-            normalized = np.clip((data - p_min) / (abs(p_min) + 1e-8), 0, 1)
-            return np.clip(normalized, 0, 1).astype(np.float32)
+    if target_size is None:
+        # Вычисляем размер исходя из целевого разрешения :cite[2]
+        target_size = [
+            int(round(original_size[0] * original_spacing[0] / target_spacing[0])),
+            int(round(original_size[1] * original_spacing[1] / target_spacing[1])),
+            int(round(original_size[2] * original_spacing[2] / target_spacing[2]))
+        ]
 
-    # Нормализуем данные к диапазону [0, 1]
-    normalized = (data - p_min) / (p_max - p_min)
+    # Определяем тип интерполяции
+    if is_label:
+        interpolator = sitk.sitkNearestNeighbor
+    else:
+        interpolator = sitk.sitkLinear
 
-    # Ограничиваем значения в диапазоне [0, 1]
-    normalized = np.clip(normalized, 0, 1)
+    # Создаем трансформацию ресемплинга :cite[7]
+    resample = sitk.ResampleImageFilter()
+    resample.SetOutputSpacing(target_spacing)
+    resample.SetSize(target_size)
+    resample.SetOutputDirection(sitk_image.GetDirection())
+    resample.SetOutputOrigin(sitk_image.GetOrigin())
+    resample.SetTransform(sitk.Transform())
+    resample.SetInterpolator(interpolator)
 
-    return normalized.astype(np.float32)
+    return resample.Execute(sitk_image)
+
+
+def crop_foreground_3d(image_array: np.ndarray, threshold: float = -1000, margin: int = 5) -> np.ndarray:
+    """Кроп изображения по области с значениями выше threshold"""
+    if image_array.ndim != 3:
+        raise ValueError("Expected 3D array for cropping")
+
+    # Создаем маску для вокселей выше порога
+    mask = image_array > threshold
+
+    if not np.any(mask):
+        return image_array
+
+    # Находим bounding box
+    coords = np.array(np.where(mask))
+
+    min_idx = np.maximum(coords.min(axis=1) - margin, 0)
+    max_idx = np.minimum(coords.max(axis=1) + margin + 1, image_array.shape)
+
+    # Выполняем кроп
+    cropped = image_array[
+        min_idx[0]:max_idx[0],
+        min_idx[1]:max_idx[1],
+        min_idx[2]:max_idx[2]
+    ]
+
+    return cropped
+
+
+def scale_intensity_range(image_array: np.ndarray,
+                          input_min: float,
+                          input_max: float,
+                          output_min: float = -1.0,
+                          output_max: float = 1.0,
+                          clip: bool = True) -> np.ndarray:
+    """Масштабирование интенсивности"""
+    if clip:
+        image_array = np.clip(image_array, input_min, input_max)
+
+    # Линейное преобразование
+    image_array = (image_array - input_min) / (input_max - input_min)
+    image_array = image_array * (output_max - output_min) + output_min
+
+    return image_array
+
+
+def resize_3d_tensor(tensor: torch.Tensor, target_shape: tuple, mode: str = 'trilinear') -> torch.Tensor:
+    """Ресайз 3D тензора до целевого размера"""
+    if tensor.ndim == 3:
+        # [D, H, W] -> [1, 1, D, H, W] для интерполяции
+        tensor = tensor.unsqueeze(0).unsqueeze(0)
+    elif tensor.ndim == 4:
+        # [C, D, H, W] -> [1, C, D, H, W]
+        tensor = tensor.unsqueeze(0)
+
+    # Интерполяция
+    resized = F.interpolate(
+        tensor,
+        size=target_shape,
+        mode=mode,
+        align_corners=False
+    )
+
+    return resized
 
 
 # -------------------------------
-# Загрузка NIfTI с корректной ориентацией
+# Загрузка NIfTI файлов :cite[1]:cite[5]:cite[6]
 # -------------------------------
-def load_nii_file(nii_path: Path) -> MetaTensor:
-    """
-    Загружает NIfTI-файл и возвращает MetaTensor с метаданными.
-    Коррекция: пациент лежит на потолке → переворачиваем каждый срез по вертикали.
-    """
+def load_nifti_file(nifti_path: Path) -> dict:
+    """Загрузка NIfTI файла (.nii или .nii.gz)"""
     try:
-        nii_img = nib.load(str(nii_path))
-        data = nii_img.get_fdata().astype(np.float32)
-        affine = nii_img.affine
+        # Загрузка через SimpleITK :cite[6]
+        sitk_image = sitk.ReadImage(str(nifti_path))
 
-        # Определяем ориентацию и корректируем оси
-        img_oriented = nib.as_closest_canonical(nii_img)
-        data_oriented = img_oriented.get_fdata().astype(np.float32)
-        affine_oriented = img_oriented.affine
+        # Получаем данные в numpy array :cite[5]
+        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)  # [D, H, W]
 
-        if data_oriented.ndim == 3:
-            # (x, y, z) -> (z, y, x) для MedicalNet (D, H, W)
-            data_oriented = np.transpose(data_oriented, (2, 1, 0))  # (z, y, x)
+        # Получаем информацию о пространственных характеристиках :cite[1]
+        original_spacing = sitk_image.GetSpacing()  # (x, y, z)
+        original_size = sitk_image.GetSize()
 
-            # ИСПРАВЛЕНИЕ: Пациент "лежит на потолке" → переворачиваем каждый срез по вертикали
-            # Ось Y в MedicalNet - это вторая ось (индекс 1) в (D, H, W)
-            # После транспонирования (z, y, x), ось Y - это вторая ось (axis=1)
-            data_oriented = np.flip(data_oriented, axis=1)  # отражаем по оси H (высота)
+        # Получаем дополнительную информацию из заголовка :cite[5]
+        header_info = {}
+        try:
+            # Альтернативный способ получения информации через nibabel (если установлен)
+            import nibabel as nib
+            nib_img = nib.load(str(nifti_path))
+            header_info = dict(nib_img.header)
+        except ImportError:
+            # Если nibabel не установлен, используем только SimpleITK
+            logging.warning("nibabel not installed, using SimpleITK header info only")
 
-        elif data_oriented.ndim == 4:
-            if data_oriented.shape[-1] in (1, 3):
-                data_oriented = data_oriented[..., 0]
-                data_oriented = np.transpose(data_oriented, (2, 1, 0))
-                data_oriented = np.flip(data_oriented, axis=1)
-            else:
-                data_oriented = data_oriented[:, :, :, 0]
-                data_oriented = np.transpose(data_oriented, (2, 1, 0))
-                data_oriented = np.flip(data_oriented, axis=1)
-        else:
-            raise ValueError(f"Unsupported dimension: {data_oriented.ndim}")
-
-        # ИСПРАВЛЕНИЕ: Создаем копию массива, чтобы избежать отрицательных стридов
-        data_oriented = np.ascontiguousarray(data_oriented.copy())
-
-        spacing = np.sqrt(np.sum(affine_oriented[:3, :3] ** 2, axis=0))
-
-        meta_dict = {
-            'spacing': spacing.tolist(),
-            'original_shape': data.shape,
-            'oriented_shape': data_oriented.shape,
-            'original_affine': affine,
-            'oriented_affine': affine_oriented,
-            'filename_or_obj': str(nii_path),
-            'source': 'nifti',
-            'hu_range': (float(data_oriented.min()), float(data_oriented.max())),
+        return {
+            'image_array': image_array,
+            'sitk_image': sitk_image,
+            'original_spacing': original_spacing,
+            'original_size': original_size,
+            'rescale_slope': 1.0,  # NIfTI обычно уже в HU
+            'rescale_intercept': 0.0,
+            'hu_range': (float(image_array.min()), float(image_array.max())),
+            'is_multiframe': False,
+            'file_type': 'nifti',
+            'header_info': header_info
         }
-        return MetaTensor(data_oriented, meta=meta_dict)
 
     except Exception as e:
-        raise RuntimeError(f"Failed to load NIfTI {nii_path}: {e}")
+        raise Exception(f"Failed to load NIfTI file {nifti_path}: {str(e)}")
 
 
 # -------------------------------
-# Трансформации с адаптивной нормализацией по процентилям
+# Определение типа входных данных и загрузка
 # -------------------------------
-def get_transforms(target_output_shape=TARGET_OUTPUT_SHAPE, percentile_min=PERCENTILE_MIN,
-                   percentile_max=PERCENTILE_MAX):
-    def adaptive_normalize_by_percentiles(x):
-        # x is a MetaTensor or numpy array
-        if isinstance(x, MetaTensor):
-            data = x.numpy()
+def load_medical_image(input_path: Path) -> dict:
+    """Определяет тип медицинского изображения и загружает соответствующим способом"""
+
+    # Проверяем расширение файла для NIfTI
+    nifti_extensions = ['.nii', '.nii.gz', '.img', '.hdr']
+    dicom_extensions = ['.dcm', '.dicom']
+
+    if input_path.is_file():
+        # Один файл - проверяем на NIfTI
+        file_suffix_lower = input_path.suffix.lower()
+        full_suffix_lower = ''.join(input_path.suffixes).lower()
+
+        if file_suffix_lower in nifti_extensions or full_suffix_lower == '.nii.gz':
+            return load_nifti_file(input_path)
+        elif file_suffix_lower in dicom_extensions:
+            # Один DICOM файл - обрабатываем как многофреймовый
+            return load_multiframe_dicom(input_path)
         else:
-            data = x
+            raise ValueError(f"Unsupported file format: {input_path}")
 
-        # Применяем адаптивную нормализацию по процентилям
-        normalized_data = adaptive_hu_normalization_by_percentiles(
-            data,
-            percentile_min=percentile_min,
-            percentile_max=percentile_max
-        )
+    elif input_path.is_dir():
+        # Директория - пробуем загрузить как DICOM серию
+        try:
+            return load_dicom_series_sitk(input_path)
+        except Exception as dicom_error:
+            # Если не DICOM, ищем NIfTI файлы в директории
+            nifti_files = []
+            for ext in nifti_extensions:
+                nifti_files.extend(list(input_path.glob(f"*{ext}")))
+                nifti_files.extend(list(input_path.glob(f"*{ext.upper()}")))
 
-        # Преобразуем обратно в тензор
-        if isinstance(x, MetaTensor):
-            return MetaTensor(normalized_data, meta=x.meta)
-        else:
-            return torch.tensor(normalized_data)
+            if nifti_files:
+                if len(nifti_files) > 1:
+                    logging.warning(f"Multiple NIfTI files found, using first: {nifti_files[0]}")
+                return load_nifti_file(nifti_files[0])
+            else:
+                raise FileNotFoundError(f"No DICOM series or NIfTI files found in {input_path}")
 
-    return Compose([
-        EnsureChannelFirst(channel_dim="no_channel"),
-        CropForeground(select_fn=lambda x: x > -1000, channel_indices=0, margin=5),
-        Lambda(lambda x: adaptive_normalize_by_percentiles(x)),  # Адаптивная нормализация по процентилям
-        Lambda(lambda x: F.adaptive_avg_pool3d(x, target_output_shape)),
-        NormalizeIntensity(subtrahend=0.5, divisor=0.5),  # [0,1] → [-1,1]
-        ToTensor()
-    ])
-
-
-# -------------------------------
-# Валидация размера
-# -------------------------------
-def validate_tensor_size(tensor, min_size=16):
-    shape = tensor.shape
-    if len(shape) == 3:
-        d, h, w = shape
-    elif len(shape) == 4 and shape[0] == 1:
-        d, h, w = shape[1], shape[2], shape[3]
     else:
-        raise ValueError(f"Unexpected tensor shape: {shape}")
-
-    if min(d, h, w) < min_size:
-        raise ValueError(f"Tensor too small: {(d, h, w)}, minimum size: {min_size}")
-    return tensor
+        raise FileNotFoundError(f"Input path does not exist: {input_path}")
 
 
 # -------------------------------
-# Обработка одного NIfTI-файла
+# Основной пайплайн обработки (обновленный)
 # -------------------------------
-def process_single_nii(nii_path: Path, output_dir: Path, percentile_min=PERCENTILE_MIN,
-                       percentile_max=PERCENTILE_MAX, verbose: bool = False) -> dict:
+def process_medical_volume(input_path: Path) -> torch.Tensor:
+    """Основной пайплайн обработки медицинского объема (DICOM или NIfTI)"""
+
+    # 1. Загрузка данных (автоматическое определение формата)
+    medical_data = load_medical_image(input_path)
+    image_array = medical_data['image_array']  # [D, H, W]
+    sitk_image = medical_data['sitk_image']
+
+    # 2. Ресемплинг до изотропного разрешения :cite[2]
+    target_spacing_xyz = TARGET_SPACING  # (x, y, z) для SimpleITK
+
+    # Вычисляем целевой размер для ресемплинга (сохраняем примерный объем)
+    original_spacing = sitk_image.GetSpacing()
+    original_size = sitk_image.GetSize()
+
+    target_size_xyz = [
+        int(round(original_size[0] * original_spacing[0] / target_spacing_xyz[0])),
+        int(round(original_size[1] * original_spacing[1] / target_spacing_xyz[1])),
+        int(round(original_size[2] * original_spacing[2] / target_spacing_xyz[2]))
+    ]
+
+    # Убедимся, что размеры не нулевые
+    target_size_xyz = [max(1, dim) for dim in target_size_xyz]
+
+    resampled_sitk = resample_image_sitk(
+        sitk_image,
+        target_spacing_xyz,
+        target_size_xyz,
+        is_label=False
+    )
+
+    resampled_array = sitk.GetArrayFromImage(resampled_sitk)  # [D, H, W]
+
+    # 3. Кроп области с данными
+    cropped_array = crop_foreground_3d(resampled_array, threshold=-1000, margin=5)
+
+    # 4. Нормализация интенсивности HU -> [-1, 1]
+    normalized_array = scale_intensity_range(
+        cropped_array,
+        input_min=HU_MIN,
+        input_max=HU_MAX,
+        output_min=-1.0,
+        output_max=1.0,
+        clip=True
+    )
+
+    # 5. Конвертация в тензор и ресайз до финального размера
+    tensor = torch.from_numpy(normalized_array).float()  # [D, H, W]
+
+    # Ресайз до целевого размера
+    resized_tensor = resize_3d_tensor(tensor, TARGET_OUTPUT_SHAPE, mode='trilinear')
+
+    # Убедимся, что размерность правильная [1, 1, D, H, W]
+    if resized_tensor.ndim == 5:
+        final_tensor = resized_tensor
+    elif resized_tensor.ndim == 4:
+        final_tensor = resized_tensor.unsqueeze(0)  # [1, C, D, H, W]
+    else:
+        final_tensor = resized_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
+
+    return final_tensor, medical_data
+
+
+# -------------------------------
+# Обработка одного пациента (обновленная)
+# -------------------------------
+def process_single_patient(patient_input: Path, output_dir: Path, verbose: bool = False) -> dict:
     result = {
-        'file_name': nii_path.name,
+        'patient_name': patient_input.name,
         'success': False,
         'error': None,
         'output_path': None,
         'original_shape': None,
-        'oriented_shape': None,
         'final_shape': None,
-        'spacing': None,
+        'original_spacing': None,
+        'resampled_spacing': TARGET_SPACING,
         'hu_range_input': None,
         'value_range_output': None,
         'mean': None,
         'std': None,
-        'percentile_min_used': percentile_min,
-        'percentile_max_used': percentile_max
+        'file_type': None
     }
 
     try:
-        # Используем функцию с корректной ориентацией
-        ct_meta_tensor = load_nii_file(nii_path)
-        original_shape = nii_path.stat().st_size  # размер файла
-        oriented_shape = ct_meta_tensor.shape
-        result.update({
-            'original_shape': ct_meta_tensor.meta.get('original_shape'),
-            'oriented_shape': oriented_shape,
-            'spacing': ct_meta_tensor.meta.get('spacing'),
-            'hu_range_input': ct_meta_tensor.meta.get('hu_range')
-        })
+        # Обработка объема (DICOM или NIfTI)
+        final_tensor, medical_data = process_medical_volume(patient_input)
 
-        if verbose:
-            logging.info(f"Loaded {nii_path.name}: oriented shape {oriented_shape}")
-
-        validated_tensor = validate_tensor_size(ct_meta_tensor)
-        transform = get_transforms(
-            target_output_shape=TARGET_OUTPUT_SHAPE,
-            percentile_min=percentile_min,
-            percentile_max=percentile_max
-        )
-        transformed_tensor = transform(validated_tensor)
-        final_tensor = transformed_tensor.unsqueeze(0)  # [D, H, W] → [1, D, H, W]
-
+        # Проверка результата
         expected_shape = (1, 1) + TARGET_OUTPUT_SHAPE
         if final_tensor.shape != expected_shape:
             raise ValueError(f"Wrong output shape: {final_tensor.shape}, expected: {expected_shape}")
@@ -258,56 +341,53 @@ def process_single_nii(nii_path: Path, output_dir: Path, percentile_min=PERCENTI
         if torch.isnan(final_tensor).any() or torch.isinf(final_tensor).any():
             raise ValueError("Invalid values (NaN/Inf) in final tensor")
 
-        output_path = output_dir / f"{nii_path.stem}.pt"
+        # Сохранение
+        output_path = output_dir / f"{patient_input.name}.pt"
         torch.save(final_tensor, output_path)
 
+        # Заполнение результата
         result.update({
             'success': True,
             'output_path': str(output_path),
+            'original_shape': medical_data['image_array'].shape,
             'final_shape': tuple(final_tensor.shape),
+            'original_spacing': medical_data['original_spacing'],
+            'hu_range_input': medical_data['hu_range'],
             'value_range_output': (float(final_tensor.min()), float(final_tensor.max())),
             'mean': float(final_tensor.mean()),
-            'std': float(final_tensor.std())
+            'std': float(final_tensor.std()),
+            'file_type': medical_data.get('file_type', 'dicom')
         })
 
         if verbose:
-            logging.info(f"✓ {nii_path.name}: "
-                         f"range=[{result['value_range_output'][0]:.3f}, {result['value_range_output'][1]:.3f}], "
-                         f"mean={result['mean']:.3f}, std={result['std']:.3f}")
+            logging.info(f"✓ {patient_input.name} ({result['file_type']}): "
+                         f"original={result['original_shape']}, "
+                         f"final={result['final_shape']}, "
+                         f"range=[{result['value_range_output'][0]:.3f}, {result['value_range_output'][1]:.3f}]")
 
     except Exception as e:
         result['error'] = str(e)
         if verbose:
-            logging.error(f"❌ {nii_path.name}: {e}")
+            logging.error(f"❌ {patient_input.name}: {e}")
             logging.debug(traceback.format_exc())
 
     return result
 
 
 # -------------------------------
-# Главная функция
+# Главная функция (обновленная)
 # -------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Prepare CT NIfTI volumes for MedicalNet 3D ResNet models with adaptive HU normalization using percentiles"
-    )
+        description="Prepare CT volumes (DICOM/NIfTI) for MedicalNet with isotropic resampling (1x1x1 mm)")
     parser.add_argument("--input", type=str, required=True,
-                        help="Input directory with .nii or .nii.gz files (or subdirs)")
+                        help="Input directory with patient data (DICOM folders or NIfTI files)")
     parser.add_argument("--output", type=str, required=True,
                         help="Output directory for processed .pt tensor files")
-    parser.add_argument("--recursive", action="store_true",
-                        help="Search for .nii/.nii.gz files recursively")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
-    parser.add_argument("--log-file", type=str, default="logs/prepare_ct_nii_tensors.log",
+    parser.add_argument("--log-file", type=str, default="logs/prepare_medical_tensors.log",
                         help="Log file path")
-    parser.add_argument("--method", type=str, choices=["canonical", "manual"],
-                        default="canonical",
-                        help="Method for axis correction: 'canonical' (recommended) or 'manual'")
-    parser.add_argument("--percentile-min", type=float, default=PERCENTILE_MIN,
-                        help="Lower percentile for adaptive normalization (default: 1)")
-    parser.add_argument("--percentile-max", type=float, default=PERCENTILE_MAX,
-                        help="Upper percentile for adaptive normalization (default: 99)")
 
     args = parser.parse_args()
 
@@ -315,67 +395,68 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger = setup_logging(Path(args.log_file))
+    log_file = Path(args.log_file)
+    logger = setup_logging(log_file)
 
     if not input_dir.exists():
         logger.error(f"Input directory does not exist: {input_dir}")
         return
 
-    # Поиск NIfTI-файлов
-    pattern = "**/*.nii*" #if args.recursive else "*.nii*"
-    nii_files = [f for f in input_dir.glob(pattern) if f.is_file() and f.suffix in ('.nii', '.gz')]
-    # Фильтруем .nii.gz правильно
-    nii_files = [f for f in nii_files if f.name.endswith(('.nii', '.nii.gz'))]
+    # Находим все входные данные (директории и файлы)
+    input_items = []
+    for item in input_dir.iterdir():
+        if item.is_dir() and not item.name.startswith('.'):
+            input_items.append(item)
+        elif item.is_file() and not item.name.startswith('.'):
+            # Проверяем, является ли файл медицинским изображением
+            medical_extensions = ['.nii', '.nii.gz', '.dcm', '.dicom', '.img', '.hdr']
+            if any(item.name.lower().endswith(ext) for ext in medical_extensions):
+                input_items.append(item)
 
-    if not nii_files:
-        logger.error(f"No .nii or .nii.gz files found in {input_dir} (recursive={args.recursive})")
+    if not input_items:
+        logger.error(f"No DICOM directories or NIfTI files found in {input_dir}")
         return
 
-    logger.info(f"Found {len(nii_files)} NIfTI file(s)")
+    logger.info(f"Found {len(input_items)} input items (directories/files)")
     logger.info(f"Target output tensor shape: {(1, 1) + TARGET_OUTPUT_SHAPE}")
-    logger.info(f"Using method: {args.method}")
-    logger.info(f"Percentile normalization: {args.percentile_min}-{args.percentile_max}%")
-    logger.info("✅ Using adaptive pooling — no resampling")
+    logger.info(f"✅ Isotropic resampling to: {TARGET_SPACING} mm")
+    logger.info(f"✅ HU range normalization: [{HU_MIN}, {HU_MAX}] → [-1.0, 1.0]")
+    logger.info(f"✅ Support for DICOM and NIfTI formats")
+    logger.info(f"✅ MedicalNet-compatible preprocessing (MONAI-free)")
 
     results_summary = {
-        'total': len(nii_files),
+        'total': len(input_items),
         'successful': 0,
         'failed': 0,
         'errors': [],
         'config': {
             'target_output_shape': TARGET_OUTPUT_SHAPE,
-            'resampling': 'none (adaptive pooling)',
-            'percentile_normalization': [args.percentile_min, args.percentile_max],
-            'output_intensity_range': [-1.0, 1.0],
-            'correction_method': args.method
+            'resampling': 'isotropic',
+            'target_spacing_mm': TARGET_SPACING,
+            'hu_normalization_range': [HU_MIN, HU_MAX],
+            'output_intensity_range': [-1.0, 1.0]
         }
     }
 
     logger.info("Starting processing...")
-    for nii_file in tqdm(nii_files, desc="Processing NIfTI files"):
-        result = process_single_nii(
-            nii_file,
-            output_dir,
-            percentile_min=args.percentile_min,
-            percentile_max=args.percentile_max,
-            verbose=args.verbose
-        )
+    for input_item in tqdm(input_items, desc="Processing medical data"):
+        result = process_single_patient(input_item, output_dir, args.verbose)
         if result['success']:
             results_summary['successful'] += 1
         else:
             results_summary['failed'] += 1
             results_summary['errors'].append({
-                'file': result['file_name'],
+                'patient': result['patient_name'],
                 'error': result['error']
             })
 
-    report_file = output_dir / "nii_processing_report.json"
+    report_file = output_dir / "processing_report_medicalnet.json"
     with open(report_file, 'w', encoding='utf-8') as f:
         json.dump(results_summary, f, indent=2, ensure_ascii=False)
 
     logger.info(f"\n{'=' * 60}")
     logger.info("PROCESSING COMPLETED")
-    logger.info(f"Total files: {results_summary['total']}")
+    logger.info(f"Total items: {results_summary['total']}")
     logger.info(f"Successfully processed: {results_summary['successful']}")
     logger.info(f"Failed: {results_summary['failed']}")
     logger.info(f"Success rate: {100 * results_summary['successful'] / results_summary['total']:.1f}%")
@@ -384,7 +465,7 @@ def main():
     logger.info(f"{'=' * 60}")
 
     if results_summary['failed'] > 0:
-        logger.warning(f"⚠️  {results_summary['failed']} files failed. Check the report for details.")
+        logger.warning(f"⚠️  {results_summary['failed']} items failed. Check the report for details.")
 
     logger.info("Done! ✅")
 
