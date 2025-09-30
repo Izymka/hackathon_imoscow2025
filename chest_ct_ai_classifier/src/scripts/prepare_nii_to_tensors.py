@@ -32,7 +32,7 @@ import torch.nn.functional as F
 # -------------------------------
 # Конфигурация
 # -------------------------------
-TARGET_OUTPUT_SHAPE = (256, 256, 256)
+TARGET_OUTPUT_SHAPE = (128, 128, 128)
 HU_MIN = -1000
 HU_MAX = 1000
 PERCENTILE_MIN = 1  # 1-й процентиль

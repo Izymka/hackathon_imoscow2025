@@ -376,6 +376,7 @@ def main():
     parser.add_argument("--log-file", type=str, default="logs/prepare_ct_tensors.log",
                         help="Log file path")
 
+
     args = parser.parse_args()
 
     input_dir = Path(args.input)

@@ -1,4 +1,3 @@
-# inference.py
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -8,6 +7,22 @@ from omegaconf import OmegaConf
 from .model_generator import generate_model
 from .lightning_module import MedicalClassificationModel
 import warnings
+import os
+import gc
+
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+# Добавляем Captum
+try:
+    from captum.attr import IntegratedGradients, Saliency, LayerGradCam, LayerAttribution
+    from captum.attr import visualization as viz
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LinearSegmentedColormap
+
+    CAPTUM_AVAILABLE = True
+except ImportError:
+    CAPTUM_AVAILABLE = False
+    print("⚠️ Captum не установлен. Установите: pip install captum")
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -21,7 +36,7 @@ class MedicalModelInference:
 
     def __init__(self,
                  weights_path: str,
-                 model_config,
+                 model_config: 'ModelConfig',  # Изменили тип аннотации
                  device: Optional[str] = None,
                  use_half_precision: bool = False):
         """
@@ -35,8 +50,24 @@ class MedicalModelInference:
         """
         self.weights_path = Path(weights_path)
 
-        # Сохраняем оригинальный конфиг ModelConfig
-        self.model_config = model_config
+        # Преобразуем ModelConfig в OmegaConf
+        if isinstance(model_config, dict):
+            self.model_config = OmegaConf.create(model_config)
+        elif hasattr(model_config, '__dict__'):  # Это ModelConfig (dataclass)
+            # Преобразуем dataclass в словарь, затем в OmegaConf
+            config_dict = {}
+            for field_name in dir(model_config):
+                if not field_name.startswith('_'):
+                    try:
+                        value = getattr(model_config, field_name)
+                        if not callable(value):
+                            config_dict[field_name] = value
+                    except:
+                        continue
+            self.model_config = OmegaConf.create(config_dict)
+        else:
+            self.model_config = model_config if isinstance(model_config, OmegaConf) else OmegaConf.create(model_config)
+
         self.use_half_precision = use_half_precision
 
         # Определение устройства
@@ -49,31 +80,23 @@ class MedicalModelInference:
         self.model = self._load_model()
         self.model.eval()
 
-        self._half_precision = False
+        # Установка half precision если нужно
+        if self.use_half_precision and self.device == 'cuda':
+            self.model.half()
+            self._half_precision = True
+        else:
+            self._half_precision = False
 
         print(f"✅ Inference модуль инициализирован на устройстве: {self.device}")
-        print(
-            f"📊 Ожидаемый входной размер: 1, 1, {self.model_config.input_D}, {self.model_config.input_H}, {self.model_config.input_W}")
+        print(f"📊 Ожидаемый входной размер: 1, 1, 256, 256, 256")
         print(f"🎯 Количество классов: {self.model_config.n_seg_classes}")
 
     def _load_model(self):
         """Загрузка и инициализация модели."""
-        # Преобразуем ModelConfig в OmegaConf
-        config_dict = {
-            'model': self.model_config.model,
-            'model_depth': self.model_config.model_depth,
-            'resnet_shortcut': self.model_config.resnet_shortcut,
-            'input_W': self.model_config.input_W,
-            'input_H': self.model_config.input_H,
-            'input_D': self.model_config.input_D,
-            'n_seg_classes': self.model_config.n_seg_classes,
-            'pretrain_path': self.model_config.pretrain_path if self.model_config.use_pretrained else None,
-            'no_cuda': (self.device == 'cpu'),
-            'gpu_id': [0] if torch.cuda.is_available() else [],
-            'phase': 'test'
-        }
-
-        omega_config = OmegaConf.create(config_dict)
+        config_dict = OmegaConf.to_container(self.model_config)
+        config_dict['gpu_id'] = [0] if torch.cuda.is_available() else []
+        config_dict['phase'] = 'test'
+        config_dict['no_cuda'] = (self.device == 'cpu')
 
         from argparse import Namespace
         args = Namespace(**config_dict)
@@ -97,10 +120,13 @@ class MedicalModelInference:
                 num_classes=self.model_config.n_seg_classes
             )
             model = lightning_model.model
-            print('Lightning чекпоинт загружен')
         else:
             # Это обычный state_dict
             model.load_state_dict(checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint)
+
+        # Убираем DataParallel, если есть
+        if hasattr(model, 'module'):
+            model = model.module
 
         # Перемещаем модель на нужное устройство
         model = model.to(self.device)
@@ -108,15 +134,7 @@ class MedicalModelInference:
         return model
 
     def _validate_input_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Валидация и предобработка входного тензора.
-
-        Args:
-            tensor: входной тензор
-
-        Returns:
-            torch.Tensor: валидированный тензор
-        """
+        """Валидация и предобработка входного тензора."""
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(f"Ожидается torch.Tensor, получено {type(tensor)}")
 
@@ -125,56 +143,49 @@ class MedicalModelInference:
 
         batch_size, channels, depth, height, width = tensor.shape
 
-        # Проверяем размеры
-        expected_shape = (1, 1, self.model_config.input_D, self.model_config.input_H, self.model_config.input_W)
+        expected_shape = (1, 1, 256, 256, 256)
         if (channels, depth, height, width) != expected_shape[1:]:
             raise ValueError(
                 f"Ожидается тензор формы {expected_shape}, "
                 f"получено {tensor.shape}. "
-                f"Ожидаемые размеры: channels=1, depth={self.model_config.input_D}, "
-                f"height={self.model_config.input_H}, width={self.model_config.input_W}"
+                f"Ожидаемые размеры: channels=1, depth=256, height=256, width=256"
             )
 
-        # Перемещаем на нужное устройство и тип данных
         tensor = tensor.to(self.device)
+
+        if self._half_precision:
+            tensor = tensor.half()
+        else:
+            tensor = tensor.float()
 
         return tensor
 
+    def _free_memory(self):
+        """Очистка памяти GPU и сбор мусора."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def predict(self, input_tensor: torch.Tensor) -> Dict[str, Union[float, int, np.ndarray]]:
-        """
-        Выполняет предсказание на одном тензоре.
-
-        Args:
-            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
-
-        Returns:
-            Dict с результатами предсказания:
-            - prediction: класс предсказания (int)
-            - probabilities: вероятности всех классов (numpy array)
-            - confidence: уверенность в предсказании (float)
-            - logits: логиты (numpy array)
-        """
+        """Выполняет предсказание на одном тензоре."""
         with torch.no_grad():
-            # Валидация входа
             input_tensor = self._validate_input_tensor(input_tensor)
-            print('Валидация входного тензора пройдена')
-            # Выполняем предсказание
+
             if self._half_precision:
                 with torch.cuda.amp.autocast():
                     logits = self.model(input_tensor)
             else:
                 logits = self.model(input_tensor)
 
-            # Применяем softmax для получения вероятностей
             probabilities = F.softmax(logits, dim=1)
-
-            # Получаем предсказанный класс
             predicted_class = torch.argmax(probabilities, dim=1).item()
             confidence = torch.max(probabilities, dim=1)[0].item()
 
-            # Конвертируем в numpy для возврата
             logits_np = logits.cpu().numpy()
             probabilities_np = probabilities.cpu().numpy()
+
+            # Очищаем память после предсказания
+            self._free_memory()
 
             return {
                 'prediction': int(predicted_class),
@@ -183,38 +194,214 @@ class MedicalModelInference:
                 'logits': logits_np.squeeze()
             }
 
-    def predict_batch(self, batch_tensor: torch.Tensor) -> List[Dict[str, Union[float, int, np.ndarray]]]:
+    def explain_prediction(self, input_tensor: torch.Tensor, target_class: Optional[int] = None,
+                           method: str = "saliency", visualize: bool = True,
+                           threshold: float = 0.1, alpha: float = 0.7):
         """
-        Выполняет предсказание на батче тензоров.
+        Объясняет предсказание с помощью Captum.
 
         Args:
-            batch_tensor: тензор формы (B, 1, input_D, input_H, input_W)
+            input_tensor: тензор формы (1, 1, 256, 256, 256)
+            target_class: класс для объяснения (если None, используется предсказанный)
+            method: метод объяснения ('integrated_gradients', 'saliency')
+            visualize: показывать ли визуализацию
+            threshold: порог для маскирования слабых атрибутов (0-1)
+            alpha: прозрачность наложения тепловой карты
 
         Returns:
-            List[Dict] - результаты для каждого элемента в батче
+            attributions: объяснение (тензор с тем же размером, что и вход)
         """
-        with torch.no_grad():
-            # Проверяем размер батча
-            batch_size = batch_tensor.shape[0]
+        if not CAPTUM_AVAILABLE:
+            raise ImportError("Captum не установлен. Установите: pip install captum")
 
-            # Валидация входа
+        try:
+            # Валидация и подготовка входного тензора
+            original_tensor = input_tensor.clone()
+            input_tensor = self._validate_input_tensor(input_tensor)
+
+            # Получаем предсказание
+            prediction_result = self.predict(original_tensor)
+            if target_class is None:
+                target_class = prediction_result['prediction']
+
+            print(f"🎯 Объяснение для класса {target_class} с методом {method}")
+
+            # Подготавливаем тензор для атрибуции
+            input_tensor = input_tensor.detach()
+            input_tensor.requires_grad_(False)
+
+            # Очищаем память перед вычислением атрибутов
+            self._free_memory()
+
+            # Выбираем метод с оптимизацией памяти
+            if method == "integrated_gradients":
+                explainer = IntegratedGradients(self.model)
+                # Используем меньше шагов для экономии памяти
+                with torch.no_grad():
+                    attributions = explainer.attribute(input_tensor, target=target_class, n_steps=15)
+            elif method == "saliency":
+                explainer = Saliency(self.model)
+                with torch.no_grad():
+                    attributions = explainer.attribute(input_tensor, target=target_class, abs=False)
+            else:
+                raise ValueError(f"Неподдерживаемый метод: {method}")
+
+            if visualize:
+                self._visualize_3d_attributions_enhanced(
+                    attributions, original_tensor,
+                    title=f"Attributions ({method})",
+                    threshold=threshold,
+                    alpha=alpha
+                )
+
+            return attributions
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print("⚠️ Недостаточно памяти GPU для объяснения. Попробуйте:")
+                print("   - Использовать method='saliency'")
+                print("   - Увеличить threshold (например, 0.3)")
+                print("   - Обработать модель на CPU")
+                self._free_memory()
+                return None
+            else:
+                raise e
+
+    def _visualize_3d_attributions_enhanced(self, attributions, original_tensor,
+                                            title="Attributions", threshold=0.1, alpha=0.7):
+        """Улучшенная визуализация атрибутов с маскированием нулей и наложением."""
+        attr_np = attributions.squeeze().detach().cpu().numpy()
+        original_np = original_tensor.squeeze().detach().cpu().numpy()
+
+        # Нормализуем исходное изображение для визуализации
+        original_normalized = (original_np - original_np.min()) / (original_np.max() - original_np.min())
+
+        # Создаем маску для значимых атрибутов
+        attr_abs = np.abs(attr_np)
+        attr_max = np.max(attr_abs)
+
+        if attr_max > 0:
+            # Нормализуем и применяем порог
+            attr_normalized = attr_abs / attr_max
+            mask = attr_normalized > threshold
+        else:
+            mask = np.zeros_like(attr_abs, dtype=bool)
+
+        mid_slice = attr_np.shape[0] // 2
+
+        # Создаем кастомную colormap с прозрачностью для низких значений
+        colors = plt.cm.hot(np.linspace(0, 1, 256))
+        colors[0] = [0, 0, 0, 0]  # Полностью прозрачный для минимального значения
+        transparent_hot = LinearSegmentedColormap.from_list('transparent_hot', colors)
+
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+
+        # Визуализация для трех плоскостей
+        planes = [
+            ('Axial (Z)', mid_slice, lambda x: x[mid_slice, :, :]),
+            ('Coronal (Y)', mid_slice, lambda x: x[:, mid_slice, :]),
+            ('Sagittal (X)', mid_slice, lambda x: x[:, :, mid_slice])
+        ]
+
+        for i, (plane_name, slice_idx, slice_fn) in enumerate(planes):
+            # Исходное изображение
+            orig_slice = slice_fn(original_normalized)
+            axes[0, i].imshow(orig_slice, cmap='gray', vmin=0, vmax=1)
+            axes[0, i].set_title(f"{plane_name} - Исходное")
+            axes[0, i].axis('off')
+
+            # Тепловая карта атрибутов с наложением
+            attr_slice = slice_fn(attr_np)
+            mask_slice = slice_fn(mask)
+
+            # Применяем маску - оставляем только значимые атрибуты
+            masked_attr = np.ma.masked_where(~mask_slice, attr_slice)
+
+            im = axes[1, i].imshow(orig_slice, cmap='gray', vmin=0, vmax=1)
+            im2 = axes[1, i].imshow(masked_attr, cmap=transparent_hot,
+                                    alpha=alpha, vmin=attr_np.min(), vmax=attr_np.max())
+
+            axes[1, i].set_title(f"{plane_name} - Атрибуты (порог: {threshold})")
+            axes[1, i].axis('off')
+
+            # Добавляем colorbar для атрибутов
+            plt.colorbar(im2, ax=axes[1, i], fraction=0.046, pad=0.04)
+
+        plt.suptitle(f"{title}\n(показаны только атрибуты > {threshold:.1%} от максимума)", fontsize=14)
+        plt.tight_layout()
+        plt.show()
+
+        # Дополнительная информация
+        total_voxels = np.prod(attr_np.shape)
+        significant_voxels = np.sum(mask)
+        print(f"📊 Значимые воксели: {significant_voxels}/{total_voxels} ({significant_voxels / total_voxels:.1%})")
+        print(f"📈 Максимальный атрибут: {attr_np.max():.4f}, Минимальный: {attr_np.min():.4f}")
+
+    def _visualize_3d_attributions(self, attributions, title="Attributions"):
+        """Стандартная визуализация атрибутов по осям (для обратной совместимости)."""
+        attr_np = attributions.squeeze().detach().cpu().numpy()
+
+        mid_slice = attr_np.shape[0] // 2
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # Axial (Z)
+        im1 = axes[0].imshow(attr_np[mid_slice, :, :], cmap='hot', vmin=attr_np.min(), vmax=attr_np.max())
+        axes[0].set_title("Axial (Z)")
+        plt.colorbar(im1, ax=axes[0])
+
+        # Coronal (Y)
+        im2 = axes[1].imshow(attr_np[:, mid_slice, :], cmap='hot', vmin=attr_np.min(), vmax=attr_np.max())
+        axes[1].set_title("Coronal (Y)")
+        plt.colorbar(im2, ax=axes[1])
+
+        # Sagittal (X)
+        im3 = axes[2].imshow(attr_np[:, :, mid_slice], cmap='hot', vmin=attr_np.min(), vmax=attr_np.max())
+        axes[2].set_title("Sagittal (X)")
+        plt.colorbar(im3, ax=axes[2])
+
+        plt.suptitle(title)
+        plt.tight_layout()
+        plt.show()
+
+    def predict_with_explanation(self, input_tensor: torch.Tensor, method: str = "saliency",
+                                 threshold: float = 0.1, alpha: float = 0.7):
+        """
+        Выполняет предсказание и объяснение за раз.
+
+        Returns:
+            dict: {'prediction': ..., 'explanation': ...}
+        """
+        prediction = self.predict(input_tensor)
+        explanation = self.explain_prediction(
+            input_tensor,
+            target_class=prediction['prediction'],
+            method=method,
+            threshold=threshold,
+            alpha=alpha
+        )
+        return {
+            'prediction': prediction,
+            'explanation': explanation
+        }
+
+    # Остальные методы остаются без изменений
+    def predict_batch(self, batch_tensor: torch.Tensor) -> List[Dict[str, Union[float, int, np.ndarray]]]:
+        """Выполняет предсказание на батче тензоров."""
+        with torch.no_grad():
+            batch_size = batch_tensor.shape[0]
             batch_tensor = self._validate_input_tensor(batch_tensor)
 
-            # Выполняем предсказание
             if self._half_precision:
                 with torch.cuda.amp.autocast():
                     logits = self.model(batch_tensor)
             else:
                 logits = self.model(batch_tensor)
 
-            # Применяем softmax
             probabilities = F.softmax(logits, dim=1)
-
-            # Получаем предсказания для всего батча
             predicted_classes = torch.argmax(probabilities, dim=1)
             confidences = torch.max(probabilities, dim=1)[0]
 
-            # Конвертируем в numpy
             logits_np = logits.cpu().numpy()
             probabilities_np = probabilities.cpu().numpy()
 
@@ -230,28 +417,12 @@ class MedicalModelInference:
             return results
 
     def predict_probability(self, input_tensor: torch.Tensor) -> np.ndarray:
-        """
-        Возвращает только вероятности классов.
-
-        Args:
-            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
-
-        Returns:
-            np.ndarray: вероятности всех классов
-        """
+        """Возвращает только вероятности классов."""
         result = self.predict(input_tensor)
         return result['probabilities']
 
     def predict_class(self, input_tensor: torch.Tensor) -> int:
-        """
-        Возвращает только предсказанный класс.
-
-        Args:
-            input_tensor: тензор формы (1, 1, input_D, input_H, input_W)
-
-        Returns:
-            int: предсказанный класс
-        """
+        """Возвращает только предсказанный класс."""
         result = self.predict(input_tensor)
         return result['prediction']
 
@@ -269,8 +440,7 @@ if __name__ == "__main__":
 
     # Создаем inference модуль
     inference = MedicalModelInference(
-        weights_path="/model/outputs/weights/best-epoch=00-val_f1=0.6222-val_auroc=0.6858.ckpt",
-
+        weights_path="model\\outputs\\weights\\best-epoch=42-val_f1=0.7650-val_auroc=0.8675.ckpt",
         model_config=config
     )
 
@@ -282,11 +452,35 @@ if __name__ == "__main__":
 
     print(f"Предсказанный класс: {result['prediction']}")
     print(f"Уверенность: {result['confidence']:.4f}")
-    print(f"Вероятности классов: {result['probabilities']}")
 
-    # Пример батчевого предсказания
-    batch_tensor = torch.randn(3, 1, 256, 256, 256)
-    batch_results = inference.predict_batch(batch_tensor)
+    # Объяснение с улучшенной визуализацией
+    try:
+        explanation = inference.explain_prediction(
+            test_tensor,
+            method="saliency",
+            visualize=True,
+            threshold=0.2,  # Настройте порог по необходимости
+            alpha=0.6  # Настройте прозрачность
+        )
 
-    for i, res in enumerate(batch_results):
-        print(f"Образец {i}: класс={res['prediction']}, уверенность={res['confidence']:.4f}")
+        # Или за раз:
+        full_result = inference.predict_with_explanation(
+            test_tensor,
+            method="saliency",
+            threshold=0.2,
+            alpha=0.6
+        )
+        print(f"Полный результат: {full_result['prediction']['prediction']}")
+
+    except Exception as e:
+        print(f"❌ Ошибка при объяснении: {e}")
+        print("🔄 Пробуем с более высоким порогом...")
+
+        # Повторная попытка с более высоким порогом
+        explanation = inference.explain_prediction(
+            test_tensor,
+            method="saliency",
+            visualize=True,
+            threshold=0.3,  # Более высокий порог
+            alpha=0.5
+        )
