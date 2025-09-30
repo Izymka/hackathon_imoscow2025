@@ -23,10 +23,10 @@ class ModelConfig:
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = os.getenv("MODEL_HP_BATCH_SIZE") or 1
+    batch_size: int = 3
     learning_rate: float = 1e-4
-    n_epochs: int = os.getenv("MODEL_HP_EPOCHS") or 1
-    num_workers: int = os.getenv("MODEL_HP_WORKERS") or 0
+    n_epochs: int = 75
+    num_workers: int = 6
 
     # ========== ADVANCED TRAINING PARAMETERS ==========
     # Оптимизация
@@ -50,7 +50,7 @@ class ModelConfig:
     auto_class_weights: bool = True  # автоматический расчет весов
 
     # ========== EARLY STOPPING ==========
-    early_stopping_patience: int = 25  # увеличено для медицинских данных
+    early_stopping_patience: int = 15  # увеличено для медицинских данных
     early_stopping_min_delta: float = 0.001
     early_stopping_metric: str = "val_f1"
 
@@ -63,7 +63,7 @@ class ModelConfig:
 
     # ========== CROSS-VALIDATION ==========
     use_cross_validation: bool = True
-    n_splits: int = 2
+    n_splits: int = 1
     cv_random_state: int = 42
     stratified_cv: bool = True  # стратифицированная кросс-валидация
 
@@ -114,7 +114,7 @@ class ModelConfig:
     # Дополнительные метрики для отслеживания
     track_additional_metrics: bool = True
     additional_metrics: List[str] = field(default_factory=lambda: [
-        "accuracy", "precision", "recall", "specificity", "auroc"
+        "accuracy", "precision", "recall", "specificity"
     ])
 
     # Частота детального логирования
@@ -123,7 +123,6 @@ class ModelConfig:
     # ========== MEDICAL-SPECIFIC PARAMETERS ==========
     # Медицинские метрики
     calculate_sensitivity: bool = True  # recall для медицины
-    calculate_specificity: bool = True
     calculate_ppv: bool = True  # положительная прогностическая ценность
     calculate_npv: bool = True  # отрицательная прогностическая ценность
 

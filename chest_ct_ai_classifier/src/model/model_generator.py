@@ -1,7 +1,12 @@
 import torch
 from torch import nn
-from .models import resnet
 
+# Заменяем относительный импорт на абсолютный
+try:
+    from .models import resnet
+except ImportError:
+    # Если относительный импорт не работает, используем абсолютный
+    from models import resnet
 
 def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
     """

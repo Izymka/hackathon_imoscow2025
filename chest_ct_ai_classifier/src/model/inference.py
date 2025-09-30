@@ -4,13 +4,21 @@ import numpy as np
 from typing import Union, List, Dict, Optional
 from pathlib import Path
 from omegaconf import OmegaConf
-from .model_generator import generate_model
-from .lightning_module import MedicalClassificationModel
 import warnings
 import os
 import gc
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+# Заменяем относительные импорты
+try:
+    from .model_generator import generate_model
+    from .lightning_module import MedicalClassificationModel
+except ImportError:
+    # Если относительный импорт не работает, используем абсолютный
+    from model_generator import generate_model
+    from lightning_module import MedicalClassificationModel
+
 
 # Добавляем Captum
 try:
