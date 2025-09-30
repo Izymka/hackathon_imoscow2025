@@ -107,6 +107,7 @@ class MedicalClassificationModel(pl.LightningModule):
         }
 
         # Метрики для обучения
+        self.train_specificity = Specificity(**metric_kwargs)
         self.train_accuracy = Accuracy(**metric_kwargs)
         self.train_f1 = F1Score(**metric_kwargs)
         self.train_precision = Precision(**metric_kwargs)
@@ -157,6 +158,7 @@ class MedicalClassificationModel(pl.LightningModule):
         self.train_f1(pred_classes, targets)
         self.train_precision(pred_classes, targets)
         self.train_recall(pred_classes, targets)
+        self.train_specificity(pred_classes, targets)
 
         # Логирование
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -164,6 +166,7 @@ class MedicalClassificationModel(pl.LightningModule):
         self.log('train_f1', self.train_f1, on_step=False, on_epoch=True, prog_bar=True)
         self.log('train_precision', self.train_precision, on_step=False, on_epoch=True)
         self.log('train_recall', self.train_recall, on_step=False, on_epoch=True)
+        self.log('train_specificity', self.train_specificity, on_step=False, on_epoch=True)
 
         return {
             'loss': loss,
@@ -220,7 +223,6 @@ class MedicalClassificationModel(pl.LightningModule):
         self.log('val_precision', self.val_precision, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_recall', self.val_recall, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_specificity', self.val_specificity, on_step=False, on_epoch=True, prog_bar=False)
-        self.log('val_auroc', self.val_auroc, on_step=False, on_epoch=True, prog_bar=True)
 
         return step_output
 
@@ -271,7 +273,7 @@ class MedicalClassificationModel(pl.LightningModule):
         self.log('test_precision', self.test_precision, on_step=False, on_epoch=True)
         self.log('test_recall', self.test_recall, on_step=False, on_epoch=True)
         self.log('test_specificity', self.test_specificity, on_step=False, on_epoch=True)
-        self.log('test_auroc', self.test_auroc, on_step=False, on_epoch=True)
+
 
         return step_output
 
@@ -434,7 +436,7 @@ class MedicalClassificationModel(pl.LightningModule):
         elif self.hparams.lr_scheduler == 'cosine':
             scheduler = CosineAnnealingLR(
                 optimizer,
-                T_max=50,  # половина от максимального числа эпох
+                T_max=25,  # половина от максимального числа эпох
                 eta_min=self.hparams.lr_min
             )
 

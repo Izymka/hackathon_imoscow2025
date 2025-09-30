@@ -19,6 +19,7 @@ import traceback
 from tqdm import tqdm
 import json
 import torch.nn.functional as F
+import nibabel as nib
 
 # -------------------------------
 # Конфигурация
@@ -157,41 +158,58 @@ def resize_3d_tensor(tensor: torch.Tensor, target_shape: tuple, mode: str = 'tri
 # -------------------------------
 # Загрузка NIfTI файлов :cite[1]:cite[5]:cite[6]
 # -------------------------------
+# Загрузка NIfTI файлов
+# -------------------------------
 def load_nifti_file(nifti_path: Path) -> dict:
-    """Загрузка NIfTI файла (.nii или .nii.gz)"""
+    """
+    Загрузка NIfTI файла (.nii или .nii.gz) с коррекцией ориентации.
+    Возвращает данные в формате, совместимом с существующим пайплайном.
+    """
     try:
-        # Загрузка через SimpleITK :cite[6]
-        sitk_image = sitk.ReadImage(str(nifti_path))
+        # Загрузка и коррекция ориентации через nibabel
+        nii_img = nib.load(str(nifti_path))
+        img_oriented = nib.as_closest_canonical(nii_img)
+        data_oriented = img_oriented.get_fdata().astype(np.float32)
+        affine_oriented = img_oriented.affine
 
-        # Получаем данные в numpy array :cite[5]
-        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)  # [D, H, W]
+        # Коррекция ориентации для MedicalNet (как в вашем коде)
+        if data_oriented.ndim == 3:
+            # (x, y, z) -> (z, y, x) для MedicalNet (D, H, W)
+            data_oriented = np.transpose(data_oriented, (2, 1,  0))  # (z, y, x)
+            # Коррекция: переворачиваем по оси Y (оси высоты)
+            data_oriented = np.flip(data_oriented, axis=1)
+        elif data_oriented.ndim == 4:
+            # Обработка 4D данных - берем первый том
+            if data_oriented.shape[-1] in (1, 3):
+                data_oriented = data_oriented[..., 0]
+            else:
+                data_oriented = data_oriented[:, :, :, 0]
+            data_oriented = np.transpose(data_oriented, (2, 1, 0))
+            data_oriented = np.flip(data_oriented, axis=1)
+        else:
+            raise ValueError(f"Unsupported dimension: {data_oriented.ndim}")
 
-        # Получаем информацию о пространственных характеристиках :cite[1]
-        original_spacing = sitk_image.GetSpacing()  # (x, y, z)
-        original_size = sitk_image.GetSize()
+        # Создаем копию массива для избежания проблем с памятью
+        data_oriented = np.ascontiguousarray(data_oriented.copy())
 
-        # Получаем дополнительную информацию из заголовка :cite[5]
-        header_info = {}
-        try:
-            # Альтернативный способ получения информации через nibabel (если установлен)
-            import nibabel as nib
-            nib_img = nib.load(str(nifti_path))
-            header_info = dict(nib_img.header)
-        except ImportError:
-            # Если nibabel не установлен, используем только SimpleITK
-            logging.warning("nibabel not installed, using SimpleITK header info only")
+        # Вычисляем spacing из аффинной матрицы
+        spacing = np.sqrt(np.sum(affine_oriented[:3, :3] ** 2, axis=0))
+
+        # Создаем SimpleITK изображение для совместимости с пайплайном
+        sitk_image = sitk.GetImageFromArray(data_oriented)
+        sitk_image.SetSpacing(spacing.tolist())
 
         return {
-            'image_array': image_array,
-            'sitk_image': sitk_image,
-            'original_spacing': original_spacing,
-            'original_size': original_size,
-            'rescale_slope': 1.0,  # NIfTI обычно уже в HU
+            'image_array': data_oriented,  # Уже в правильной ориентации [D, H, W]
+            'sitk_image': sitk_image,  # Для совместимости с resample_image_sitk
+            'original_spacing': spacing.tolist(),  # (x, y, z)
+            'original_size': data_oriented.shape[::-1],  # (x, y, z) для SimpleITK
+            'rescale_slope': 1.0,
             'rescale_intercept': 0.0,
-            'hu_range': (float(image_array.min()), float(image_array.max())),
+            'hu_range': (float(data_oriented.min()), float(data_oriented.max())),
             'is_multiframe': False,
             'file_type': 'nifti',
-            'header_info': header_info
+            'header_info': dict(nii_img.header)  # Сохраняем оригинальный заголовок
         }
 
     except Exception as e:

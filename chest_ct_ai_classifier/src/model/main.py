@@ -19,7 +19,7 @@ from pytorch_lightning.callbacks import (
 )
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 from omegaconf import OmegaConf
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 import pandas as pd
 import numpy as np
 from rich.console import Console
@@ -354,92 +354,63 @@ class CrossValidationTrainer:
         return class_weights.cpu()
 
     def run_cross_validation(self) -> Dict:
-        """Запускает полную кросс-валидацию."""
+        """Запускает полную кросс-валидацию (или одиночный фолд при n_splits=1)."""
 
-        # Красивый заголовок
         console.print(Panel.fit(
-            "[bold green]🏥 МЕДИЦИНСКАЯ КЛАССИФИКАЦИЯ - КРОСС-ВАЛИДАЦИЯ 🏥[/bold green]",
+            "[bold green]🏥 МЕДИЦИНСКАЯ КЛАССИФИКАЦИЯ - ОБУЧЕНИЕ 🏥[/bold green]",
             border_style="green"
         ))
 
         # Загружаем данные
         filenames, labels = self.load_data_labels()
-
-        # Информация о данных
         unique_labels, counts = np.unique(labels, return_counts=True)
 
+        # Информация о данных
         data_table = Table(title="📊 Информация о данных")
         data_table.add_column("Параметр", style="cyan")
         data_table.add_column("Значение", style="yellow")
-
         data_table.add_row("Всего образцов", str(len(filenames)))
         for label, count in zip(unique_labels, counts):
             data_table.add_row(f"Класс {label}", f"{count} ({count / len(labels) * 100:.1f}%)")
-
         console.print(data_table)
-
-        # Стратифицированная кросс-валидация
-        skf = StratifiedKFold(
-            n_splits=self.cfg.n_splits,
-            shuffle=True,
-            random_state=self.cfg.cv_random_state
-        )
 
         all_results = []
 
+        if self.cfg.n_splits == 1:
+            # Один фолд = один train/val split
+            train_idx, val_idx = train_test_split(
+                np.arange(len(filenames)),
+                test_size=self.cfg.val_size if hasattr(self.cfg, "val_size") else 0.2,
+                stratify=labels,
+                random_state=self.cfg.cv_random_state
+            )
+            folds = [(train_idx, val_idx)]
+        else:
+            skf = StratifiedKFold(
+                n_splits=self.cfg.n_splits,
+                shuffle=True,
+                random_state=self.cfg.cv_random_state
+            )
+            folds = skf.split(filenames, labels)
+
         # Обучение по фолдам
-        for fold, (train_indices, val_indices) in enumerate(skf.split(filenames, labels)):
-            # Создаем датасеты для фолда
+        for fold, (train_indices, val_indices) in enumerate(folds):
             train_loader, val_loader = self.create_fold_datasets(
                 train_indices, val_indices, filenames, labels
             )
-
-            # Информация о фолде
-            train_labels = [labels[i] for i in train_indices]
-            val_labels = [labels[i] for i in val_indices]
-
-            fold_table = Table(title=f"📋 Фолд {fold + 1}")
-            fold_table.add_column("Набор", style="cyan")
-            fold_table.add_column("Размер", style="yellow")
-            fold_table.add_column("Класс 0", style="red")
-            fold_table.add_column("Класс 1", style="green")
-
-            # Конвертируем метки в numpy массивы для избежания проблем с устройствами
-            train_labels_np = np.array([int(label) if isinstance(label, (torch.Tensor, int)) else label for label in train_labels])
-            val_labels_np = np.array([int(label) if isinstance(label, (torch.Tensor, int)) else label for label in val_labels])
-
-            train_counts = np.bincount(train_labels_np)
-            val_counts = np.bincount(val_labels_np)
-
-            fold_table.add_row(
-                "Обучение",
-                str(len(train_indices)),
-                f"{train_counts[0]} ({train_counts[0] / len(train_indices) * 100:.1f}%)",
-                f"{train_counts[1]} ({train_counts[1] / len(train_indices) * 100:.1f}%)"
-            )
-            fold_table.add_row(
-                "Валидация",
-                str(len(val_indices)),
-                f"{val_counts[0]} ({val_counts[0] / len(val_indices) * 100:.1f}%)",
-                f"{val_counts[1]} ({val_counts[1] / len(val_indices) * 100:.1f}%)"
-            )
-
-            console.print(fold_table)
-
-            # Обучение фолда
             fold_results = self.train_fold(fold, train_loader, val_loader)
             all_results.append(fold_results)
 
-            # Промежуточные результаты
             rprint(f"✅ [bold green]Фолд {fold + 1} завершен![/bold green]")
             rprint(f"   📈 Лучший результат: {fold_results['best_val_score']:.4f}")
 
-        # Сводка по всем фолдам
-        self.print_cv_summary(all_results)
+        # Сводка (если фолдов несколько)
+        if len(all_results) > 1:
+            self.print_cv_summary(all_results)
 
         return {
             'fold_results': all_results,
-            'cv_summary': self.calculate_cv_summary(all_results)
+            'cv_summary': self.calculate_cv_summary(all_results) if len(all_results) > 1 else all_results[0]
         }
 
     def calculate_cv_summary(self, results: List[Dict]) -> Dict:
