@@ -23,7 +23,7 @@ class ModelConfig:
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 2
+    batch_size: int = 4
     learning_rate: float = 1e-4
     n_epochs: int = 50
     num_workers: int = 6

@@ -253,14 +253,13 @@ class CrossValidationTrainer:
         # Коллбэки
         checkpoint_callback = ModelCheckpoint(
             dirpath=f"{self.cfg.save_folder}/fold_{fold + 1}",
-            filename="best-{epoch:02d}-{val_f1:.4f}-{val_recall:.4f}-{val_specificity:.4f}",
+            filename="best-{epoch:02d}-{val_f1:.4f}-{val_recall:.4f}-{val_specificity:.4f}--{val_auroc:.4f}",
             save_top_k=-1,
             every_n_epochs=1,
             monitor=self.cfg.monitor_metric,
             mode=self.cfg.checkpoint_mode,
             save_weights_only=False,
-            verbose=False,
-            auto_insert_metric_name=False,
+            verbose=False
         )
 
         early_stopping = EarlyStopping(
