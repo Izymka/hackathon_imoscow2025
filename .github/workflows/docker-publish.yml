@@ -66,21 +66,17 @@ jobs:
     if: github.ref == 'refs/heads/main'
     env:
       APP_NAME: ct-ml
+      IMAGE_TAG: sha-${{ github.sha[0:7] }}
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          IMAGE_TAG: sha-${{ substring(github.sha, 0, 7) }}
         with:
           host: ${{ vars.SERVER_HOST }}
           username: ${{ vars.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: REGISTRY,IMAGE_NAME,APP_NAME
+          envs: REGISTRY,IMAGE_NAME,APP_NAME,IMAGE_TAG
           script: |
             IMAGE_NAME_LOWER=$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
-            SHORT_SHA="${{ github.sha }}"
-            SHORT_SHA="${SHORT_SHA:0:7}"
-            IMAGE_TAG="sha-${SHORT_SHA}"
             FULL_IMAGE_NAME="${REGISTRY}/${IMAGE_NAME_LOWER}:${IMAGE_TAG}"
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             echo "Deploying $FULL_IMAGE_NAME..."
