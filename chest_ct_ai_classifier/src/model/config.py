@@ -27,6 +27,8 @@ class ModelConfig:
     learning_rate: float = 1e-4
     n_epochs: int = 50
     num_workers: int = 6
+    optimizer: str = "adam"
+    momentum: float = 0.9
 
     # ========== ADVANCED TRAINING PARAMETERS ==========
     # Оптимизация
@@ -60,6 +62,7 @@ class ModelConfig:
     monitor_metric: str = "val_auroc"
     checkpoint_mode: str = "max"
     save_weights_only: bool = False  # сохраняем полные чекпоинты для возобновления
+    resume_path: Optional[str] = None
 
     # ========== CROSS-VALIDATION ==========
     use_cross_validation: bool = True

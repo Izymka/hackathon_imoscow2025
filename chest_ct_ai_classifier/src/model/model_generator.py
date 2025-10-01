@@ -8,6 +8,7 @@ except ImportError:
     # Если относительный импорт не работает, используем абсолютный
     from models import resnet
 
+
 def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
     """
     Адаптирует модель для нового размера входа путем замены последнего слоя.
@@ -69,15 +70,13 @@ def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
         old_fc = model.module.fc
         model.module.fc = nn.Linear(flattened_size, n_seg_classes)
         new_fc = model.module.fc
+        # Перемещаем новый FC слой на то же устройство
+        model.module.fc = model.module.fc.to(device)
     else:
         old_fc = model.fc
         model.fc = nn.Linear(flattened_size, n_seg_classes)
         new_fc = model.fc
-
-    # Перемещаем новый FC слой на то же устройство
-    if hasattr(model, 'module'):
-        model.module.fc = model.module.fc.to(device)
-    else:
+        # Перемещаем новый FC слой на то же устройство
         model.fc = model.fc.to(device)
 
     print(f"🔄 Заменен FC слой: {old_fc.in_features} → {flattened_size} входов, {n_seg_classes} выходов")
@@ -92,23 +91,46 @@ def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
     print("🔥 Размораживание FC слоя для обучения...")
     for param in new_fc.parameters():
         param.requires_grad = True
-        # 5. Размораживаем layer3 и layer4
-        print("🔥 Размораживание layer3 и layer4...")
-        if hasattr(model, 'module'):
-            for p in model.module.layer3.parameters():
-                p.requires_grad = True
-            for p in model.module.layer4.parameters():
-                p.requires_grad = True
-        else:
-            for p in model.layer3.parameters():
-                p.requires_grad = True
-            for p in model.layer4.parameters():
-                p.requires_grad = True
 
-    # Возврат обучаемых параметров
-    trainable_parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
+    # Размораживаем layer3 и layer4 (ВЫНЕСЕНО ИЗ ЦИКЛА!)
+    print("🔥 Размораживание layer3 и layer4...")
+    if hasattr(model, 'module'):
+        for p in model.module.layer3.parameters():
+            p.requires_grad = True
+        for p in model.module.layer4.parameters():
+            p.requires_grad = True
+    else:
+        for p in model.layer3.parameters():
+            p.requires_grad = True
+        for p in model.layer4.parameters():
+            p.requires_grad = True
 
-    return model, trainable_parameters
+    # Собираем все обучаемые параметры
+    trainable_params = []
+    base_params = []
+
+    # FC слой - новые параметры
+    trainable_params.extend(list(new_fc.parameters()))
+
+    # layer3 и layer4 - базовые параметры
+    if hasattr(model, 'module'):
+        base_params.extend(list(model.module.layer3.parameters()))
+        base_params.extend(list(model.module.layer4.parameters()))
+    else:
+        base_params.extend(list(model.layer3.parameters()))
+        base_params.extend(list(model.layer4.parameters()))
+
+    print(f"✅ Обучаемых параметров: {sum(p.numel() for p in trainable_params + base_params):,}")
+    print(f"   - FC слой: {sum(p.numel() for p in trainable_params):,}")
+    print(f"   - layer3+layer4: {sum(p.numel() for p in base_params):,}")
+
+    # Возвращаем в том же формате, что и стандартный путь
+    parameters = {
+        'base_parameters': base_params,
+        'new_parameters': trainable_params
+    }
+
+    return model, parameters
 
 
 def generate_model(opt):
@@ -164,7 +186,7 @@ def generate_model(opt):
 
         pretrain_dict = {k: v for k, v in pretrain['state_dict'].items() if k in net_dict.keys()}
         net_dict.update(pretrain_dict)
-        model.load_state_dict(net_dict, strict=False) # чтобы игнорировать лишние ключи в загруженной модели
+        model.load_state_dict(net_dict, strict=False)
 
         # Проверка необходимости адаптации размеров
         current_input_size = (opt.input_W, opt.input_H, opt.input_D)
@@ -175,12 +197,12 @@ def generate_model(opt):
             print("🔧 Выполняется адаптация модели...")
 
             # Адаптируем модель
-            model, adapted_parameters = adapt_model_for_input_size(
+            model, parameters = adapt_model_for_input_size(
                 model, current_input_size, opt.model_depth, opt.n_seg_classes
             )
 
             print("✅ Адаптация модели завершена!")
-            return model, adapted_parameters
+            return model, parameters
 
         # Стандартный путь без изменения размеров
         new_parameters = []
