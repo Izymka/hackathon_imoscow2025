@@ -8,23 +8,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
 
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Копирование и установка зависимостей
-COPY ../chest_ct_ai_classifier/src/requirements.txt /app/requirements.txt
-
+# Копирование и установка зависимостей (только необходимые для сервиса)
+COPY service/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
-    pip install -r /app/requirements.txt
+    pip install --no-cache-dir -r /app/requirements.txt
 
-# Копирование проекта
-COPY ../service/ /app/service/
-COPY ../chest_ct_ai_classifier/src/utils /app/chest_ct_ai_classifier/src/utils
-COPY ../chest_ct_ai_classifier/src/model /app/chest_ct_ai_classifier/src/model
+# Копирование проекта (только нужные каталоги)
+COPY service/ /app/service/
+COPY chest_ct_ai_classifier/src/utils /app/chest_ct_ai_classifier/src/utils
+COPY chest_ct_ai_classifier/src/model /app/chest_ct_ai_classifier/src/model
+COPY chest_ct_ai_classifier/src/scripts /app/chest_ct_ai_classifier/src/scripts
 
 RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
