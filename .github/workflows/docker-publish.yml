@@ -66,8 +66,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     env:
       APP_NAME: ct-ml
-      IMAGE_TAG: sha-${{ substr(github.sha, 0, 7) }}
     steps:
+      - name: Set short SHA
+        run: echo "IMAGE_TAG=sha-$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_ENV
+
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
         with:
