@@ -5,13 +5,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report
-from evaluate_model import evaluate_model, plot_roc_curve
-from datasets.medical_tensors import MedicalTensorDataset
+from .model_evaluate import evaluate_model, plot_roc_curve
+from .datasets.medical_tensors import MedicalTensorDataset
 from monai.metrics import ConfusionMatrixMetric
-from model_generator import generate_model
+from .model_generator import generate_model
 import argparse
 import numpy as np
-
 
 def create_test_config():
     """Создание тестовой конфигурации"""
