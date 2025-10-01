@@ -223,6 +223,7 @@ class MedicalClassificationModel(pl.LightningModule):
         self.log('val_precision', self.val_precision, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_recall', self.val_recall, on_step=False, on_epoch=True, prog_bar=False)
         self.log('val_specificity', self.val_specificity, on_step=False, on_epoch=True, prog_bar=False)
+        self.log('val_auroc', self.val_auroc, on_step=False, on_epoch=True, prog_bar=False)
 
         return step_output
 
@@ -273,7 +274,7 @@ class MedicalClassificationModel(pl.LightningModule):
         self.log('test_precision', self.test_precision, on_step=False, on_epoch=True)
         self.log('test_recall', self.test_recall, on_step=False, on_epoch=True)
         self.log('test_specificity', self.test_specificity, on_step=False, on_epoch=True)
-
+        self.log('test_auroc', self.test_auroc, on_step=False, on_epoch=True)
 
         return step_output
 

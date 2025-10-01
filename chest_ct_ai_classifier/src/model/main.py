@@ -259,7 +259,8 @@ class CrossValidationTrainer:
             monitor=self.cfg.monitor_metric,
             mode=self.cfg.checkpoint_mode,
             save_weights_only=False,
-            verbose=False
+            verbose=False,
+            auto_insert_metric_name=False,
         )
 
         early_stopping = EarlyStopping(

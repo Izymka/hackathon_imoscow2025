@@ -23,9 +23,9 @@ class ModelConfig:
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 3
+    batch_size: int = 2
     learning_rate: float = 1e-4
-    n_epochs: int = 75
+    n_epochs: int = 50
     num_workers: int = 6
 
     # ========== ADVANCED TRAINING PARAMETERS ==========
@@ -41,7 +41,7 @@ class ModelConfig:
 
     # ========== LOSS FUNCTION PARAMETERS ==========
     # Выбор функции потерь
-    use_focal_loss: bool = False  # True для сложных несбалансированных случаев
+    use_focal_loss: bool = True  # True для сложных несбалансированных случаев
     focal_alpha: float = 1.0
     focal_gamma: float = 2.0
 
@@ -52,18 +52,18 @@ class ModelConfig:
     # ========== EARLY STOPPING ==========
     early_stopping_patience: int = 15  # увеличено для медицинских данных
     early_stopping_min_delta: float = 0.001
-    early_stopping_metric: str = "val_f1"
+    early_stopping_metric: str = "val_auroc"
 
     # ========== CHECKPOINTING ==========
     save_intervals: int = 10
     save_top_k: int = 3
-    monitor_metric: str = "val_f1"
+    monitor_metric: str = "val_auroc"
     checkpoint_mode: str = "max"
     save_weights_only: bool = False  # сохраняем полные чекпоинты для возобновления
 
     # ========== CROSS-VALIDATION ==========
     use_cross_validation: bool = True
-    n_splits: int = 1
+    n_splits: int = 3
     cv_random_state: int = 42
     stratified_cv: bool = True  # стратифицированная кросс-валидация
 
