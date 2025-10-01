@@ -114,23 +114,33 @@ class MedicalModelInference:
 
         # Загружаем веса
         if self.device == 'cpu':
-            checkpoint = torch.load(self.weights_path, map_location='cpu', weights_only=True)
+            checkpoint = torch.load(self.weights_path, map_location='cpu', weights_only=False)
         else:
-            checkpoint = torch.load(self.weights_path, map_location=self.device, weights_only=True)
+            checkpoint = torch.load(self.weights_path, map_location=self.device, weights_only=False)
 
         # Проверяем, является ли чекпоинт Lightning модулем или обычной моделью
         if 'state_dict' in checkpoint:
-            # Это Lightning чекпоинт
-            lightning_model = MedicalClassificationModel.load_from_checkpoint(
-                self.weights_path,
+            state_dict = checkpoint['state_dict']
+            
+            # Убираем префикс 'model.module.' из ключей
+            new_state_dict = {}
+            for key, value in state_dict.items():
+                # Удаляем 'model.module.' или 'module.' из начала ключа
+                new_key = key.replace('model.module.', 'model.')
+                new_key = new_key.replace('module.', '')
+                new_state_dict[new_key] = value
+            
+            # Создаем Lightning модуль и загружаем исправленный state_dict
+            lightning_model = MedicalClassificationModel(
                 model=model,
                 learning_rate=self.model_config.learning_rate,
                 num_classes=self.model_config.n_seg_classes
             )
+            lightning_model.load_state_dict(new_state_dict, strict=False)
             model = lightning_model.model
         else:
             # Это обычный state_dict
-            model.load_state_dict(checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint)
+            model.load_state_dict(checkpoint)
 
         # Убираем DataParallel, если есть
         if hasattr(model, 'module'):
@@ -138,6 +148,7 @@ class MedicalModelInference:
 
         # Перемещаем модель на нужное устройство
         model = model.to(self.device)
+        model.eval()  # Переводим в режим evaluation
 
         return model
 

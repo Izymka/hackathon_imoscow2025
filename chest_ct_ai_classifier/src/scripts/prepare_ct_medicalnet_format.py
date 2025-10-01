@@ -9,6 +9,7 @@
 import os
 import argparse
 import logging
+import sys
 from pathlib import Path
 import numpy as np
 import torch
@@ -452,14 +453,21 @@ def main():
 
     if not input_dir.exists():
         logger.error(f"Input directory does not exist: {input_dir}")
-        return
+        sys.exit(1)
 
     patient_dirs = [d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
     if not patient_dirs:
-        logger.error(f"No patient directories found in {input_dir}")
-        return
+        # Check if there are DICOM files directly in the input directory
+        dicom_files = [f for f in input_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
+        if dicom_files:
+            logger.info(f"Found {len(dicom_files)} files in input directory, processing as single patient case")
+            patient_dirs = [input_dir]
+        else:
+            logger.error(f"No patient directories or DICOM files found in {input_dir}")
+            sys.exit(1)
 
-    logger.info(f"Found {len(patient_dirs)} patient directories")
+
+    logger.info(f"Found {len(patient_dirs)} patient directories/cases to process")
     logger.info(f"Target output tensor shape: {(1, 1) + TARGET_OUTPUT_SHAPE}")
     logger.info(f"✅ Isotropic resampling to: {TARGET_SPACING} mm")
     logger.info(f"✅ HU range normalization: [{HU_MIN}, {HU_MAX}] → [-1.0, 1.0]")
