@@ -100,7 +100,7 @@ class MedicalModelInference:
         print(f"🎯 Количество классов: {self.model_config.n_seg_classes}")
 
     def _load_model(self):
-        """Загрузка и инициализация модели."""
+        """Загрузка и инициализация модели с устойчивой подгонкой ключей state_dict."""
         config_dict = OmegaConf.to_container(self.model_config)
         config_dict['gpu_id'] = [0] if torch.cuda.is_available() else []
         config_dict['phase'] = 'test'
@@ -109,38 +109,49 @@ class MedicalModelInference:
         from argparse import Namespace
         args = Namespace(**config_dict)
 
-        # Генерируем модель
+        # Генерируем пустую модель целевой архитектуры
         model, _ = generate_model(args)
 
-        # Загружаем веса
-        if self.device == 'cpu':
-            checkpoint = torch.load(self.weights_path, map_location='cpu', weights_only=False)
-        else:
-            checkpoint = torch.load(self.weights_path, map_location=self.device, weights_only=False)
+        # Загружаем чекпоинт (CPU-совместимо)
+        checkpoint = torch.load(self.weights_path, map_location=('cpu' if self.device == 'cpu' else self.device), weights_only=False)
 
-        # Проверяем, является ли чекпоинт Lightning модулем или обычной моделью
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-            
-            # Убираем префикс 'model.module.' из ключей
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                # Удаляем 'model.module.' или 'module.' из начала ключа
-                new_key = key.replace('model.module.', 'model.')
-                new_key = new_key.replace('module.', '')
-                new_state_dict[new_key] = value
-            
-            # Создаем Lightning модуль и загружаем исправленный state_dict
-            lightning_model = MedicalClassificationModel(
-                model=model,
-                learning_rate=self.model_config.learning_rate,
-                num_classes=self.model_config.n_seg_classes
-            )
-            lightning_model.load_state_dict(new_state_dict, strict=False)
-            model = lightning_model.model
-        else:
-            # Это обычный state_dict
-            model.load_state_dict(checkpoint)
+        # Извлекаем исходный state_dict из разных возможных форматов
+        raw_sd = None
+        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint and isinstance(checkpoint['state_dict'], dict):
+            raw_sd = checkpoint['state_dict']
+        elif isinstance(checkpoint, dict):
+            # Если в словаре много тензоров — это, вероятно, сам state_dict
+            tensor_like = [k for k, v in checkpoint.items() if isinstance(v, torch.Tensor)]
+            if len(tensor_like) > 0:
+                raw_sd = checkpoint
+        # Если формат неизвестен, пробуем напрямую как state_dict
+        if raw_sd is None:
+            raw_sd = checkpoint if isinstance(checkpoint, dict) else {}
+
+        target_sd = model.state_dict()
+
+        # Нормализуем ключи: убираем префиксы 'model.module.', 'module.', 'model.'
+        def normalize_key(k: str) -> str:
+            for pref in ('model.module.', 'module.', 'model.'):
+                if k.startswith(pref):
+                    k = k[len(pref):]
+            return k
+
+        cleaned_sd = {}
+        matched, total = 0, 0
+        for k, v in raw_sd.items():
+            total += 1
+            nk = normalize_key(k)
+            if nk in target_sd and target_sd[nk].shape == v.shape:
+                cleaned_sd[nk] = v
+                matched += 1
+
+        # Загружаем максимально совместимую подмножину весов
+        missing, unexpected = model.load_state_dict(cleaned_sd, strict=False)
+        try:
+            print(f"🔑 Загрузка весов: сопоставлено {matched}/{total}; пропущено {len(missing)}; лишних {len(unexpected)}")
+        except Exception:
+            pass
 
         # Убираем DataParallel, если есть
         if hasattr(model, 'module'):
@@ -148,8 +159,7 @@ class MedicalModelInference:
 
         # Перемещаем модель на нужное устройство
         model = model.to(self.device)
-        model.eval()  # Переводим в режим evaluation
-
+        model.eval()
         return model
 
     def _validate_input_tensor(self, tensor: torch.Tensor) -> torch.Tensor:

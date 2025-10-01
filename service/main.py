@@ -10,6 +10,7 @@ import subprocess
 import torch
 import time
 from pathlib import Path
+import urllib.request
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -35,9 +36,29 @@ async def lifespan(app: FastAPI):
     # Инициализация модели при старте
     global ml_model
     try:
+        # Загрузка весов модели
+        weights_url = "https://ct-dicom-storage.website.yandexcloud.net/model/weights.pth"
+        model_dir = Path("./model")
+        model_path = model_dir / "weights.pth"
+
+        # Создаём папку, если её нет
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        # Загружаем веса, если файл отсутствует
+        if not model_path.exists():
+            logger.info(f"📥 Загрузка весов модели...")
+            try:
+                start_time = time.time()
+                urllib.request.urlretrieve(weights_url, model_path)
+                logger.info(f"✅ Веса успешно загружены за {time.time() - start_time:.2f} сек")
+            except Exception as download_error:
+                logger.error(f"❌ Ошибка при загрузке весов: {download_error}")
+                raise
+        else:
+            logger.info(f"✅ Веса уже существуют: {model_path}")
+
         config = ModelConfig()
-        model_path = "../chest_ct_ai_classifier/src/model/outputs/weights/best-epoch=38-val_f1=0.7917-val_auroc=0.8628.ckpt"
-        ml_model = MedicalModelInference(model_path, config)
+        ml_model = MedicalModelInference(str(model_path), config)
         logger.info("✅ Модель успешно загружена")
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки модели: {e}")
@@ -146,6 +167,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     # Предсказание
     prediction = ml_model.predict(tensor)
+    #explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False)
 
     # Извлечение ID пациента из имени файла или метаданных
     patient_id = tensor_file.stem
@@ -231,7 +253,14 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
                 "summary": result,
-                "result": predict
+                "result": {
+                    "message": predict.message,
+                    "processing_time": predict.processing_time,
+                    "prediction": {
+                        "result": predict.prediction["prediction"],
+                        "confidence": predict.prediction["confidence"]
+                    }
+                }
             }
 
         except Exception as e:

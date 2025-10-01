@@ -157,11 +157,6 @@ class ModelConfig:
     use_ensemble: bool = False
     ensemble_models: List[str] = field(default_factory=list)
 
-    print(f"Learning rate: {learning_rate}")
-    print(f"Batch size: {batch_size}")
-    print(f"Epochs: {n_epochs}")
-    print(f"Num workers: {num_workers}")
-
     def __post_init__(self):
         """Постобработка конфига после инициализации."""
 
