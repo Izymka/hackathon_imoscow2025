@@ -10,7 +10,7 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app:/app/chest_ct_ai_classifier/src:/app/chest_ct_ai_classifier/src/model
+    PYTHONPATH=/app
 
 #RUN pip install torch==2.5.1+cpu torchvision==0.20.1+cpu torchaudio==2.5.1+cpu \
 #    --index-url https://download.pytorch.org/whl/cpu
