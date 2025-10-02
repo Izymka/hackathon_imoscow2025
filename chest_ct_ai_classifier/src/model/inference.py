@@ -1,3 +1,5 @@
+import time
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -225,7 +227,7 @@ class MedicalModelInference:
 
     def explain_prediction(self, input_tensor: torch.Tensor, target_class: Optional[int] = None,
                            method: str = "saliency", visualize: bool = True,
-                           threshold: float = 0.1, alpha: float = 0.7):
+                           threshold: float = 0.1, alpha: float = 0.7, save_png: bool = False):
         """
         Объясняет предсказание с помощью Captum.
 
@@ -249,8 +251,8 @@ class MedicalModelInference:
             input_tensor = self._validate_input_tensor(input_tensor)
 
             # Получаем предсказание
-            prediction_result = self.predict(original_tensor)
             if target_class is None:
+                prediction_result = self.predict(original_tensor)
                 target_class = prediction_result['prediction']
 
             print(f"🎯 Объяснение для класса {target_class} с методом {method}")
@@ -283,6 +285,16 @@ class MedicalModelInference:
                     alpha=alpha
                 )
 
+            if save_png:
+                saved_image = self._visualize_3d_attributions_enhanced(
+                    attributions, original_tensor,
+                    title=f"Attributions ({method})",
+                    threshold=threshold,
+                    alpha=alpha,
+                    return_png=True
+                )
+                attributions["image"] = saved_image
+
             return attributions
 
         except RuntimeError as e:
@@ -297,7 +309,7 @@ class MedicalModelInference:
                 raise e
 
     def _visualize_3d_attributions_enhanced(self, attributions, original_tensor,
-                                            title="Attributions", threshold=0.1, alpha=0.7):
+                                            title="Attributions", threshold=0.1, alpha=0.7, return_png=False):
         """Улучшенная визуализация атрибутов с маскированием нулей и наложением."""
         attr_np = attributions.squeeze().detach().cpu().numpy()
         original_np = original_tensor.squeeze().detach().cpu().numpy()
@@ -358,6 +370,10 @@ class MedicalModelInference:
 
         plt.suptitle(f"{title}\n(показаны только атрибуты > {threshold:.1%} от максимума)", fontsize=14)
         plt.tight_layout()
+        if return_png:
+            filename = f"{int(time.time())}_{hash(str(time.time())) % 1000:03d}.png"
+            plt.savefig(filename)
+            return filename
         plt.show()
 
         # Дополнительная информация

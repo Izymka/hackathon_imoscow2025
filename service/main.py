@@ -13,6 +13,7 @@ from pathlib import Path
 import urllib.request
 import os
 import fcntl
+import numpy as np
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -33,6 +34,25 @@ logger = logging.getLogger(__name__)
 
 # Глобальная переменная для модели
 ml_model = None
+
+
+def convert_numpy_types(obj: Any) -> Any:
+    """
+    Рекурсивно преобразует numpy типы в нативные Python типы для сериализации в JSON.
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, torch.Tensor):
+        return obj.cpu().numpy().tolist()
+    return obj
 
 # Путь к скрипту подготовки данных из переменной окружения
 PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
@@ -192,7 +212,10 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     # Предсказание
     prediction = ml_model.predict(tensor)
-    #explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False)
+    #explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
+
+    # Преобразование numpy типов в Python типы для корректной сериализации
+    prediction = convert_numpy_types(prediction)
 
     # Извлечение ID пациента из имени файла или метаданных
     patient_id = tensor_file.stem
@@ -273,7 +296,9 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
 
             # Convert to plain dict for JSON response
             result = summary.to_dict() if hasattr(summary, 'to_dict') else dict(summary)
-            return {
+
+            # Преобразуем все numpy типы в Python типы для корректной JSON сериализации
+            response = {
                 "ok": True,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
@@ -283,10 +308,13 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                     "processing_time": predict.processing_time,
                     "prediction": {
                         "result": predict.prediction["prediction"],
-                        "confidence": predict.prediction["confidence"]
+                        "confidence": predict.prediction["confidence"],
+                        "probabilities": list(predict.prediction["probabilities"]),
                     }
                 }
             }
+
+            return convert_numpy_types(response)
 
         except Exception as e:
             logger.error(f"Error processing dicom {dicom_root}: {e}")
