@@ -14,6 +14,7 @@ import urllib.request
 import os
 import fcntl
 import numpy as np
+import pandas as pd
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -295,14 +296,46 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             predict = process_predict(dicom_root, tensors_dir, background_tasks, tmpdir)
 
             # Convert to plain dict for JSON response
-            result = summary.to_dict() if hasattr(summary, 'to_dict') else dict(summary)
+            dicom_summary = summary.to_dict() if hasattr(summary, 'to_dict') else dict(summary)
 
-            # Преобразуем все numpy типы в Python типы для корректной JSON сериализации
-            response = {
+            # Сохранить результат в xlsx файл
+            try:
+                # Определяем путь для сохранения результата рядом с архивом
+                result_xlsx_path = zip_path.with_suffix("").with_name(f"{zip_path.stem}_result.xlsx")
+
+                # Подготовка данных для сохранения
+                series_uids = None
+                try:
+                    # summary.series_uids может быть списком/кортежем
+                    series_uids = getattr(summary, "series_uids", None)
+                    if isinstance(series_uids, (list, tuple)):
+                        series_uids = ",".join(map(str, series_uids))
+                except Exception:
+                    series_uids = None
+
+                data_row = {
+                    "path_to_study": str(dicom_root),
+                    "study_uid": getattr(summary, "study_uid", None),
+                    "series_uid": series_uids if series_uids is not None else getattr(summary, "series_uids", None),
+                    "probability_of_pathology": float(predict.prediction["probabilities"][1]) if isinstance(predict.prediction.get("probabilities"), (list, tuple)) and len(predict.prediction["probabilities"]) > 1 else None,
+                    "pathology": int(predict.prediction.get("prediction")) if predict.prediction.get("prediction") is not None else None,
+                    "processing_status": "Success",
+                    "time_of_processing": float(predict.processing_time),
+                }
+
+                # Создаём DataFrame и сохраняем в .xlsx
+                df = pd.DataFrame([data_row])
+                df.to_excel(result_xlsx_path, index=False)
+                xlsx_result_path = str(result_xlsx_path)
+            except Exception as save_err:
+                logger.error(f"Не удалось сохранить результат в XLSX: {save_err}")
+                xlsx_result_path = None
+
+            return {
                 "ok": True,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
-                "summary": result,
+                "result_path": xlsx_result_path,
                 "result": {
                     "message": predict.message,
                     "processing_time": predict.processing_time,
@@ -311,7 +344,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                         "confidence": predict.prediction["confidence"],
                         "probabilities": list(predict.prediction["probabilities"]),
                     }
-                }
+                },
+                "dicom": dicom_summary,
             }
 
             return convert_numpy_types(response)
