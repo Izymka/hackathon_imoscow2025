@@ -22,6 +22,7 @@ RUN pip install --upgrade pip && \
 RUN pip install --no-cache-dir scikit-learn matplotlib
 RUN pip install --no-cache-dir openpyxl
 RUN pip install --no-cache-dir psutil
+RUN pip install --no-cache-dir requests
 
 # Копирование проекта (только нужные каталоги)
 COPY service/ /app/service/
