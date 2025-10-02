@@ -19,6 +19,8 @@ COPY service/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /app/requirements.txt
 
+RUN pip install --no-cache-dir scikit-learn matplotlib
+
 # Копирование проекта (только нужные каталоги)
 COPY service/ /app/service/
 COPY chest_ct_ai_classifier/src/__init__.py /app/chest_ct_ai_classifier/src/__init__.py
