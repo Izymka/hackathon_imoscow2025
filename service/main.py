@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Глобальная переменная для модели
 ml_model = None
 
+# Путь к скрипту подготовки данных из переменной окружения
+PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Инициализация модели при старте
@@ -159,7 +162,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     # Вызов скрипта подготовки тензоров
     cmd = [
-        "python", "./scripts/prepare_ct_medicalnet_format.py",
+        "python", PREPARE_CT_SCRIPT,
         "--input", str(dicom_dir),
         "--output", str(tensor_output_dir)
     ]
