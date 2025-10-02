@@ -43,21 +43,41 @@ ml_model = None
 
 def convert_numpy_types(obj: Any) -> Any:
     """
-    Рекурсивно преобразует numpy типы в нативные Python типы для сериализации в JSON.
+    Рекурсивно преобразует numpy и другие нестандартные типы в нативные Python типы для сериализации в JSON.
     """
+    # Локальный импорт для опциональной зависимости
+    try:
+        from pydicom.multival import MultiValue  # type: ignore
+    except Exception:  # если pydicom не установлен
+        MultiValue = tuple  # подстановка, чтобы isinstance работал без pydicom
+
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
         return float(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        return [convert_numpy_types(item) for item in obj]
     elif isinstance(obj, torch.Tensor):
         return obj.cpu().numpy().tolist()
-    return obj
+    elif isinstance(obj, (set, frozenset)):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, (datetime,)):
+        return obj.isoformat()
+    elif isinstance(obj, Path):
+        return str(obj)
+    elif isinstance(obj, MultiValue):
+        # pydicom MultiValue -> список строк
+        return [str(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {str(key): convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numpy_types(item) for item in obj]
+    else:
+        # Пытаемся преобразовать неизвестные объекты в строку
+        try:
+            return str(obj)
+        except Exception:
+            return obj
 
 # Путь к скрипту подготовки данных из переменной окружения
 PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
@@ -251,7 +271,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
 
     logger.info(f"Processing DICOM archive: {zip_path}")
 
-    metric_event(f"Обработка исследования {zip_path.name}")
+    background_tasks.add_task(metric_event, f"Обработка исследования {zip_path.name}")
 
     if not zip_path.exists():
         raise HTTPException(status_code=400, detail=f"Zip path does not exist: {zip_path}")
@@ -340,13 +360,13 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 "message": predict.message,
                 "processing_time": predict.processing_time,
                 "prediction": {
-                    "result": predict.prediction["prediction"],
-                    "confidence": predict.prediction["confidence"],
-                    "probabilities": list(predict.prediction["probabilities"]),
+                    "result": int(predict.prediction["prediction"]) if predict.prediction.get("prediction") is not None else None,
+                    "confidence": float(predict.prediction["confidence"]) if predict.prediction.get("confidence") is not None else None,
+                    "probabilities": [float(x) for x in predict.prediction.get("probabilities", [])],
                 }
             }
 
-            metric_event(f"Успешно обработано {zip_path.name}: {prediction_result}")
+            background_tasks.add_task(metric_event, f"Успешно обработано {zip_path.name}: {prediction_result}")
 
             return {
                 "ok": True,
@@ -358,7 +378,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             }
 
         except Exception as e:
-            metric_event(f"Ошибка обработки {zip_path.name}: {str(e)}")
+            background_tasks.add_task(metric_event, f"Ошибка обработки {zip_path.name}: {str(e)}")
             logger.error(f"Error processing dicom {dicom_root}: {e}")
             return {
                 "ok": False,
@@ -379,8 +399,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             pass
 
 
-async def metric_event(message: str):
-    """Отправка события метрики"""
+def metric_event(message: str):
+    """Отправка события метрики (синхронно, рекомендуется вызывать через BackgroundTasks)"""
     try:
         response = requests.post(
             'https://ct-scan-api.prowebcraft.ru/api/event',
