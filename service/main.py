@@ -228,16 +228,15 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     tensor_file = tensor_files[0]
 
     # Загрузка тензора и предсказание
+    logger.info("Reading tensor", tensor_file)
     tensor = read_tensor(tensor_file)
 
     # Предсказание
+    logger.info("Predict")
     prediction = ml_model.predict(tensor)
     # explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
     del tensor
     gc.collect()
-
-    # Преобразование numpy типов в Python типы для корректной сериализации
-    prediction = convert_numpy_types(prediction)
 
     # Извлечение ID пациента из имени файла или метаданных
     patient_id = tensor_file.stem
@@ -337,15 +336,16 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 except Exception:
                     series_uids = None
 
+                prob = predict.prediction["confidence"]
+                if predict.prediction["prediction"] == 0:
+                    prob = float(1 - prob)
+
                 data_row = {
                     "path_to_study": str(dicom_root),
                     "study_uid": getattr(summary, "study_uid", None),
                     "series_uid": series_uids if series_uids is not None else getattr(summary, "series_uids", None),
-                    "probability_of_pathology": float(predict.prediction["probabilities"][1]) if isinstance(
-                        predict.prediction.get("probabilities"), (list, tuple)) and len(
-                        predict.prediction["probabilities"]) > 1 else None,
-                    "pathology": int(predict.prediction.get("prediction")) if predict.prediction.get(
-                        "prediction") is not None else None,
+                    "probability_of_pathology": prob,
+                    "pathology": predict.prediction["prediction"],
                     "processing_status": "Success",
                     "time_of_processing": float(predict.processing_time),
                 }
@@ -369,7 +369,6 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                     "prediction": {
                         "result": predict.prediction["prediction"],
                         "confidence": predict.prediction["confidence"],
-                        "probabilities": list(predict.prediction["probabilities"]),
                     }
                 },
                 "dicom": dicom_summary,
