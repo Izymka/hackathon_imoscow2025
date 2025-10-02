@@ -12,9 +12,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
 
-# Копирование и установка зависимостей (только необходимые для сервиса)
-RUN pip install torch==2.5.1+cpu torchvision==0.18.1+cpu torchaudio==2.5.1+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
+#RUN pip install torch==2.5.1+cpu torchvision==0.20.1+cpu torchaudio==2.5.1+cpu \
+#    --index-url https://download.pytorch.org/whl/cpu
+
 COPY service/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /app/requirements.txt
