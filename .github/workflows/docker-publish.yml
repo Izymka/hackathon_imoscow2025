@@ -87,6 +87,6 @@ jobs:
             sleep 3
             docker rm $APP_NAME || true
             docker run -d -p 3102:8000 --restart always \
-              -v /var/www/fastuser/data/ct-backend/ml-storage:/mnt/storage \            
-              --network ctnet \            
+              -v /var/www/fastuser/data/ct-backend/ml-storage:/mnt/storage \
+              --network ctnet \
               --name $APP_NAME $FULL_IMAGE_NAME
