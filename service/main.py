@@ -16,6 +16,7 @@ import os
 import fcntl
 import numpy as np
 import pandas as pd
+import requests
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -248,6 +249,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
 
     logger.info(f"Processing DICOM archive: {zip_path}")
 
+    metric_event(f"Обработка исследования {zip_path.name}")
+
     if not zip_path.exists():
         raise HTTPException(status_code=400, detail=f"Zip path does not exist: {zip_path}")
     if not zip_path.is_file():
@@ -298,7 +301,9 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             # Сохранить результат в xlsx файл
             try:
                 # Определяем путь для сохранения результата рядом с архивом
-                result_xlsx_path = zip_path.with_suffix("").with_name(f"{zip_path.stem}_result.xlsx")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                random_suffix = np.random.randint(1000, 9999)
+                result_xlsx_path = zip_path.with_name(f"{timestamp}_{random_suffix}.xlsx")
 
                 # Подготовка данных для сохранения
                 series_uids = None
@@ -328,26 +333,31 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 logger.error(f"Не удалось сохранить результат в XLSX: {save_err}")
                 xlsx_result_path = None
 
+            prediction_result = {
+                "message": predict.message,
+                "processing_time": predict.processing_time,
+                "prediction": {
+                    "result": predict.prediction["prediction"],
+                    "confidence": predict.prediction["confidence"],
+                    "probabilities": list(predict.prediction["probabilities"]),
+                }
+            }
+
+            metric_event(f"Успешно обработано {zip_path.name}: {prediction_result}")
+
             return {
                 "ok": True,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
                 "result_path": xlsx_result_path,
-                "result": {
-                    "message": predict.message,
-                    "processing_time": predict.processing_time,
-                    "prediction": {
-                        "result": predict.prediction["prediction"],
-                        "confidence": predict.prediction["confidence"],
-                        "probabilities": list(predict.prediction["probabilities"]),
-                    }
-                },
+                "result": prediction_result,
                 "dicom": dicom_summary,
             }
 
             return convert_numpy_types(response)
 
         except Exception as e:
+            metric_event(f"Ошибка обработки {zip_path.name}: {str(e)}")
             logger.error(f"Error processing dicom {dicom_root}: {e}")
             return {
                 "ok": False,
@@ -366,6 +376,24 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             background_tasks.add_task(cleanup_temp_dir, tmpdir)
         except Exception:
             pass
+
+
+async def metric_event(message: str):
+    """Отправка события метрики"""
+    try:
+        response = requests.post(
+            'https://ct-scan-api.prowebcraft.ru/api/event',
+            json={'event': message},
+            headers={
+                'Content-Type': 'application/json',
+                'X-App': 'ct-ml',
+                'X-From': os.uname().nodename
+            },
+            timeout=5
+        )
+        response.raise_for_status()
+    except Exception as e:
+        logger.warning(f"Failed to send metric event: {e}")
 
 
 def cleanup_temp_dir(temp_dir: Path):
