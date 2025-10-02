@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Переменные окружения
@@ -9,6 +13,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
 
 # Копирование и установка зависимостей (только необходимые для сервиса)
+RUN pip install torch==2.5.1+cpu torchvision==0.18.1+cpu torchaudio==2.5.1+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
 COPY service/requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r /app/requirements.txt
@@ -18,6 +24,8 @@ COPY service/ /app/service/
 COPY chest_ct_ai_classifier/src/utils /app/chest_ct_ai_classifier/src/utils
 COPY chest_ct_ai_classifier/src/model /app/chest_ct_ai_classifier/src/model
 COPY chest_ct_ai_classifier/src/scripts /app/chest_ct_ai_classifier/src/scripts
+
+RUN apt-get clean && rm -rf /tmp/* /var/tmp/*
 
 RUN useradd --create-home --shell /bin/bash app && chown -R app:app /app
 USER app
