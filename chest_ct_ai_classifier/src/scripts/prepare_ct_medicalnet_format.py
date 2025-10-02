@@ -16,9 +16,9 @@ import torch
 import pydicom
 import SimpleITK as sitk
 import traceback
-from tqdm import tqdm
 import json
 import torch.nn.functional as F
+import gc
 
 # -------------------------------
 # Конфигурация
@@ -33,14 +33,13 @@ HU_MAX = 600.0  # Максимальное значение для КТ
 # Настройка логирования
 # -------------------------------
 def setup_logging(log_file: Path):
-    """Настройка логирования в файл и консоль"""
+    """Настройка логирования в файл"""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()
+            logging.FileHandler(log_file)
         ]
     )
     return logging.getLogger(__name__)
@@ -193,19 +192,25 @@ def load_multiframe_dicom(dicom_file: Path) -> dict:
             slice_spacing = getattr(ds, "SliceThickness", 1.0)
 
         spacing = [float(slice_spacing), float(pixel_spacing[0]), float(pixel_spacing[1])]
+        hu_min, hu_max = float(pixel_array.min()), float(pixel_array.max())
+        original_size = pixel_array.shape[::-1]
 
         # Создаем SimpleITK изображение из numpy array
         sitk_image = sitk.GetImageFromArray(pixel_array)
-        sitk_image.SetSpacing(spacing[::-1])  # SimpleITK использует [x, y, z] порядок
+        sitk_image.SetSpacing(spacing[::-1])
+
+        # Освобождаем DICOM dataset
+        del ds
+        gc.collect()
 
         return {
             'image_array': pixel_array,
             'sitk_image': sitk_image,
-            'original_spacing': spacing[::-1],  # [x, y, z] для консистентности
-            'original_size': pixel_array.shape[::-1],  # [x, y, z]
+            'original_spacing': spacing[::-1],
+            'original_size': original_size,
             'rescale_slope': slope,
             'rescale_intercept': intercept,
-            'hu_range': (float(pixel_array.min()), float(pixel_array.max())),
+            'hu_range': (hu_min, hu_max),
             'is_multiframe': True
         }
 
@@ -227,27 +232,24 @@ def load_dicom_series_sitk(dicom_folder: Path) -> dict:
         try:
             ds_test = pydicom.dcmread(str(first_file), stop_before_pixels=True)
             num_frames = int(getattr(ds_test, "NumberOfFrames", 1))
+            del ds_test
 
             if num_frames > 1:
-                # Это многофреймовый файл
-                logging.info(f"Loading multiframe DICOM with {num_frames} frames: {first_file.name}")
                 return load_multiframe_dicom(first_file)
-        except Exception as e:
-            logging.warning(f"Could not check multiframe status: {e}")
-            # Продолжаем с обычной загрузкой
+        except Exception:
+            pass
 
         # Обычная загрузка серии файлов
         reader = sitk.ImageSeriesReader()
         series_IDs = reader.GetGDCMSeriesIDs(str(dicom_folder))
 
         if not series_IDs:
-            # Если SimpleITK не нашел серии, пробуем загрузить все файлы как серию
             series_file_names = [str(f) for f in files]
             if len(series_file_names) == 1:
-                # Если только один файл, проверяем его на многофреймовость
                 try:
                     ds_single = pydicom.dcmread(series_file_names[0], force=True)
                     num_frames_single = int(getattr(ds_single, "NumberOfFrames", 1))
+                    del ds_single
                     if num_frames_single > 1:
                         return load_multiframe_dicom(first_file)
                     else:
@@ -267,8 +269,8 @@ def load_dicom_series_sitk(dicom_folder: Path) -> dict:
         sitk_image = reader.Execute()
 
         # Получаем данные
-        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)  # [D, H, W]
-        original_spacing = sitk_image.GetSpacing()  # (x, y, z)
+        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
+        original_spacing = sitk_image.GetSpacing()
         original_size = sitk_image.GetSize()
 
         # Получаем параметры рескейла из первого файла
@@ -277,12 +279,18 @@ def load_dicom_series_sitk(dicom_folder: Path) -> dict:
             dcm = pydicom.dcmread(series_file_names[0], stop_before_pixels=True)
             rescale_slope = float(getattr(dcm, 'RescaleSlope', 1.0))
             rescale_intercept = float(getattr(dcm, 'RescaleIntercept', 0.0))
+            del dcm
         except Exception:
             pass
 
         # Применяем рескейл если нужно
         if rescale_slope != 1.0 or rescale_intercept != 0.0:
             image_array = image_array * rescale_slope + rescale_intercept
+
+        hu_min, hu_max = float(image_array.min()), float(image_array.max())
+
+        del reader
+        gc.collect()
 
         return {
             'image_array': image_array,
@@ -291,7 +299,7 @@ def load_dicom_series_sitk(dicom_folder: Path) -> dict:
             'original_size': original_size,
             'rescale_slope': rescale_slope,
             'rescale_intercept': rescale_intercept,
-            'hu_range': (float(image_array.min()), float(image_array.max())),
+            'hu_range': (hu_min, hu_max),
             'is_multiframe': False
         }
 
@@ -306,13 +314,12 @@ def process_ct_volume(dicom_folder: Path) -> torch.Tensor:
     """Основной пайплайн обработки КТ объема"""
     # 1. Загрузка DICOM
     dicom_data = load_dicom_series_sitk(dicom_folder)
-    image_array = dicom_data['image_array']  # [D, H, W] или [frames, H, W]
+    image_array = dicom_data['image_array']
     sitk_image = dicom_data['sitk_image']
 
     # 2. Ресемплинг до изотропного разрешения
-    target_spacing_xyz = TARGET_SPACING  # (x, y, z) для SimpleITK
+    target_spacing_xyz = TARGET_SPACING
 
-    # Вычисляем целевой размер для ресемплинга (сохраняем примерный объем)
     original_spacing = sitk_image.GetSpacing()
     original_size = sitk_image.GetSize()
 
@@ -322,7 +329,6 @@ def process_ct_volume(dicom_folder: Path) -> torch.Tensor:
         int(round(original_size[2] * original_spacing[2] / target_spacing_xyz[2]))
     ]
 
-    # Убедимся, что размеры не нулевые
     target_size_xyz = [max(1, dim) for dim in target_size_xyz]
 
     resampled_sitk = resample_image_sitk(
@@ -332,10 +338,16 @@ def process_ct_volume(dicom_folder: Path) -> torch.Tensor:
         is_label=False
     )
 
-    resampled_array = sitk.GetArrayFromImage(resampled_sitk)  # [D, H, W]
+    resampled_array = sitk.GetArrayFromImage(resampled_sitk)
+
+    # Освобождаем память
+    del sitk_image, resampled_sitk
+    gc.collect()
 
     # 3. Кроп области с данными
     cropped_array = crop_foreground_3d(resampled_array, threshold=-1000, margin=5)
+    del resampled_array
+    gc.collect()
 
     # 4. Нормализация интенсивности HU -> [-1, 1]
     normalized_array = scale_intensity_range(
@@ -346,20 +358,26 @@ def process_ct_volume(dicom_folder: Path) -> torch.Tensor:
         output_max=1.0,
         clip=True
     )
+    del cropped_array
+    gc.collect()
 
     # 5. Конвертация в тензор и ресайз до финального размера
-    tensor = torch.from_numpy(normalized_array).float()  # [D, H, W]
+    tensor = torch.from_numpy(normalized_array).float()
+    del normalized_array
+    gc.collect()
 
     # Ресайз до целевого размера
     resized_tensor = resize_3d_tensor(tensor, TARGET_OUTPUT_SHAPE, mode='trilinear')
+    del tensor
+    gc.collect()
 
     # Убедимся, что размерность правильная [1, 1, D, H, W]
     if resized_tensor.ndim == 5:
         final_tensor = resized_tensor
     elif resized_tensor.ndim == 4:
-        final_tensor = resized_tensor.unsqueeze(0)  # [1, C, D, H, W]
+        final_tensor = resized_tensor.unsqueeze(0)
     else:
-        final_tensor = resized_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, D, H, W]
+        final_tensor = resized_tensor.unsqueeze(0).unsqueeze(0)
 
     return final_tensor, dicom_data
 
@@ -372,15 +390,7 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
         'patient_name': patient_dir.name,
         'success': False,
         'error': None,
-        'output_path': None,
-        'original_shape': None,
-        'final_shape': None,
-        'original_spacing': None,
-        'resampled_spacing': TARGET_SPACING,
-        'hu_range_input': None,
-        'value_range_output': None,
-        'mean': None,
-        'std': None
+        'output_path': None
     }
 
     try:
@@ -399,30 +409,16 @@ def process_single_patient(patient_dir: Path, output_dir: Path, verbose: bool = 
         output_path = output_dir / f"{patient_dir.name}.pt"
         torch.save(final_tensor, output_path)
 
-        # Заполнение результата
-        result.update({
-            'success': True,
-            'output_path': str(output_path),
-            'original_shape': dicom_data['image_array'].shape,
-            'final_shape': tuple(final_tensor.shape),
-            'original_spacing': dicom_data['original_spacing'],
-            'hu_range_input': dicom_data['hu_range'],
-            'value_range_output': (float(final_tensor.min()), float(final_tensor.max())),
-            'mean': float(final_tensor.mean()),
-            'std': float(final_tensor.std())
-        })
+        result['success'] = True
+        result['output_path'] = str(output_path)
 
-        if verbose:
-            logging.info(f"✓ {patient_dir.name}: "
-                         f"original={result['original_shape']}, "
-                         f"final={result['final_shape']}, "
-                         f"range=[{result['value_range_output'][0]:.3f}, {result['value_range_output'][1]:.3f}]")
+        # Освобождаем память
+        del final_tensor, dicom_data
+        gc.collect()
 
     except Exception as e:
         result['error'] = str(e)
-        if verbose:
-            logging.error(f"❌ {patient_dir.name}: {e}")
-            logging.debug(traceback.format_exc())
+        logging.error(f"Failed: {patient_dir.name}: {e}")
 
     return result
 
@@ -437,8 +433,6 @@ def main():
                         help="Input directory with patient subdirectories containing DICOM files")
     parser.add_argument("--output", type=str, required=True,
                         help="Output directory for processed .pt tensor files")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Enable verbose logging")
     parser.add_argument("--log-file", type=str, default="logs/prepare_ct_tensors_medicalnet.log",
                         help="Log file path")
 
@@ -457,40 +451,23 @@ def main():
 
     patient_dirs = [d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
     if not patient_dirs:
-        # Check if there are DICOM files directly in the input directory
         dicom_files = [f for f in input_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
         if dicom_files:
-            logger.info(f"Found {len(dicom_files)} files in input directory, processing as single patient case")
             patient_dirs = [input_dir]
         else:
             logger.error(f"No patient directories or DICOM files found in {input_dir}")
             sys.exit(1)
 
-
-    logger.info(f"Found {len(patient_dirs)} patient directories/cases to process")
-    logger.info(f"Target output tensor shape: {(1, 1) + TARGET_OUTPUT_SHAPE}")
-    logger.info(f"✅ Isotropic resampling to: {TARGET_SPACING} mm")
-    logger.info(f"✅ HU range normalization: [{HU_MIN}, {HU_MAX}] → [-1.0, 1.0]")
-    logger.info(f"✅ MedicalNet-compatible preprocessing (MONAI-free)")
-    logger.info(f"✅ Support for multiframe DICOM files")
-
     results_summary = {
         'total': len(patient_dirs),
         'successful': 0,
         'failed': 0,
-        'errors': [],
-        'config': {
-            'target_output_shape': TARGET_OUTPUT_SHAPE,
-            'resampling': 'isotropic',
-            'target_spacing_mm': TARGET_SPACING,
-            'hu_normalization_range': [HU_MIN, HU_MAX],
-            'output_intensity_range': [-1.0, 1.0]
-        }
+        'errors': []
     }
 
-    logger.info("Starting processing...")
-    for patient_dir in tqdm(patient_dirs, desc="Processing patients"):
-        result = process_single_patient(patient_dir, output_dir, args.verbose)
+    print(f"Processing {len(patient_dirs)} patients...")
+    for idx, patient_dir in enumerate(patient_dirs, 1):
+        result = process_single_patient(patient_dir, output_dir, False)
         if result['success']:
             results_summary['successful'] += 1
         else:
@@ -500,24 +477,13 @@ def main():
                 'error': result['error']
             })
 
-    report_file = output_dir / "processing_report_medicalnet.json"
-    with open(report_file, 'w', encoding='utf-8') as f:
-        json.dump(results_summary, f, indent=2, ensure_ascii=False)
+        # Периодическая принудительная сборка мусора
+        if idx % 10 == 0:
+            gc.collect()
+            print(f"Processed {idx}/{len(patient_dirs)}")
 
-    logger.info(f"\n{'=' * 60}")
-    logger.info("PROCESSING COMPLETED")
-    logger.info(f"Total patients: {results_summary['total']}")
-    logger.info(f"Successfully processed: {results_summary['successful']}")
-    logger.info(f"Failed: {results_summary['failed']}")
-    logger.info(f"Success rate: {100 * results_summary['successful'] / results_summary['total']:.1f}%")
-    logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Report saved to: {report_file}")
-    logger.info(f"{'=' * 60}")
+    print(f"\nCompleted: {results_summary['successful']}/{results_summary['total']} successful")
 
-    if results_summary['failed'] > 0:
-        logger.warning(f"⚠️  {results_summary['failed']} patients failed. Check the report for details.")
-
-    logger.info("Done! ✅")
 
 
 if __name__ == "__main__":

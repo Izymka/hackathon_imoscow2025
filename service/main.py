@@ -1,3 +1,4 @@
+import gc
 import shutil
 import tempfile
 import zipfile
@@ -189,7 +190,23 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
         "--verbose"
     ]
 
-    process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    try:
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504,
+            detail="Превышено время обработки DICOM (300 сек)"
+        )
+
+    # Обработка SIGKILL (OOM)
+    if process.returncode == -9:
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                "Процесс обработки DICOM был завершён системой (нехватка памяти). "
+                "Попробуйте обработать файл меньшего размера или обратитесь к администратору."
+            )
+        )
 
     if process.returncode != 0:
         raise HTTPException(
@@ -215,6 +232,8 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     # Предсказание
     prediction = ml_model.predict(tensor)
     #explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
+    del tensor
+    gc.collect()
 
     # Преобразование numpy типов в Python типы для корректной сериализации
     prediction = convert_numpy_types(prediction)
