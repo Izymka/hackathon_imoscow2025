@@ -6,20 +6,20 @@
 Полностью без MONAI - использует только SimpleITK, NumPy и PyTorch.
 """
 
-import os
 import argparse
+import gc
 import logging
+import os
 import sys
 from pathlib import Path
-import numpy as np
-import torch
-import pydicom
+
 import SimpleITK as sitk
-import traceback
-import json
-import torch.nn.functional as F
-import gc
+import numpy as np
 import psutil
+import pydicom
+import torch
+import torch.nn.functional as F
+
 
 # -------------------------------
 # Утилита для мониторинга памяти
@@ -358,8 +358,8 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
 
     if debug:
         logger.debug(f"[process_ct_volume] Loaded volume shape: {image_array.shape}, "
-                    f"spacing: {dicom_data['original_spacing']}, "
-                    f"HU range: {dicom_data['hu_range']}")
+                     f"spacing: {dicom_data['original_spacing']}, "
+                     f"HU range: {dicom_data['hu_range']}")
     log_memory(logger, f"[process_ct_volume] After DICOM loading", debug)
 
     # 2. Ресемплинг до изотропного разрешения
@@ -416,7 +416,8 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
     )
 
     if debug:
-        logger.debug(f"[process_ct_volume] Normalized range: [{normalized_array.min():.4f}, {normalized_array.max():.4f}]")
+        logger.debug(
+            f"[process_ct_volume] Normalized range: [{normalized_array.min():.4f}, {normalized_array.max():.4f}]")
     log_memory(logger, f"[process_ct_volume] After normalization", debug)
 
     del cropped_array
@@ -452,8 +453,8 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
 
     if debug:
         logger.debug(f"[process_ct_volume] Final tensor shape: {final_tensor.shape}, "
-                    f"dtype: {final_tensor.dtype}, "
-                    f"range: [{final_tensor.min():.4f}, {final_tensor.max():.4f}]")
+                     f"dtype: {final_tensor.dtype}, "
+                     f"range: [{final_tensor.min():.4f}, {final_tensor.max():.4f}]")
     log_memory(logger, f"[process_ct_volume] END", debug)
 
     return final_tensor, dicom_data
@@ -507,9 +508,135 @@ def process_single_patient(patient_dir: Path, output_dir: Path, debug: bool = Fa
 
 
 # -------------------------------
-# Главная функция
+# Основная функция для использования как библиотеки
+# -------------------------------
+def prepare_ct_tensor(
+    input_dir,
+    output_dir,
+    log_file=None,
+    debug=False,
+    force_cpu=False,
+    verbose=True
+):
+    """
+    Подготовка КТ-данных для модели MedicalNet с изотропным ресемплингом до 1x1x1 мм.
+
+    Args:
+        input_dir (str or Path): Входная директория с поддиректориями пациентов, содержащими DICOM файлы
+        output_dir (str or Path): Выходная директория для сохранения обработанных .pt тензоров
+        log_file (str or Path, optional): Путь к лог-файлу. Если None, логирование будет только в консоль
+        debug (bool): Включить режим отладки с подробным логированием использования памяти
+        force_cpu (bool): Принудительно использовать CPU вместо CUDA
+        verbose (bool): Выводить прогресс в консоль
+
+    Returns:
+        dict: Словарь с результатами обработки:
+            - 'total': общее количество пациентов
+            - 'successful': количество успешно обработанных
+            - 'failed': количество неудачных
+            - 'errors': список ошибок с деталями
+    """
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Настройка логирования
+    if log_file is not None:
+        log_file = Path(log_file)
+        logger = setup_logging(log_file, debug=debug)
+    else:
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            handler = logging.StreamHandler(sys.stdout) if debug else logging.NullHandler()
+            logger.addHandler(handler)
+            logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+
+    if debug:
+        logger.info("=" * 80)
+        logger.info("DEBUG MODE ENABLED - Detailed memory monitoring active")
+        logger.info("=" * 80)
+
+    if not input_dir.exists():
+        error_msg = f"Input directory does not exist: {input_dir}"
+        logger.error(error_msg)
+        raise FileNotFoundError(error_msg)
+
+    if force_cpu:
+        # Отключить CUDA, если она доступна
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
+    if torch.cuda.is_available() and not force_cpu:
+        device = torch.device("cuda")
+        if verbose or debug:
+            logger.info(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
+    else:
+        device = torch.device("cpu")
+        if verbose or debug:
+            logger.info("Using CPU device")
+    del device
+
+    patient_dirs = [d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
+    if not patient_dirs:
+        dicom_files = [f for f in input_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
+        if dicom_files:
+            patient_dirs = [input_dir]
+        else:
+            error_msg = f"No patient directories or DICOM files found in {input_dir}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+
+    results_summary = {
+        'total': len(patient_dirs),
+        'successful': 0,
+        'failed': 0,
+        'errors': []
+    }
+
+    log_memory(logger, "[prepare_ct_tensor] Before processing patients", debug)
+    if verbose:
+        print(f"Processing {len(patient_dirs)} patients...")
+
+    for idx, patient_dir in enumerate(patient_dirs, 1):
+        if debug:
+            logger.debug(f"\n{'=' * 60}")
+            logger.debug(f"Processing patient {idx}/{len(patient_dirs)}: {patient_dir.name}")
+            logger.debug(f"{'=' * 60}")
+
+        result = process_single_patient(patient_dir, output_dir, debug)
+
+        if result['success']:
+            results_summary['successful'] += 1
+        else:
+            results_summary['failed'] += 1
+            results_summary['errors'].append({
+                'patient': result['patient_name'],
+                'error': result['error']
+            })
+
+        # Периодическая принудительная сборка мусора
+        if idx % 10 == 0:
+            gc.collect()
+            log_memory(logger, f"[prepare_ct_tensor] After processing {idx} patients (periodic GC)", debug)
+            if verbose:
+                print(f"Processed {idx}/{len(patient_dirs)}")
+
+    log_memory(logger, "[prepare_ct_tensor] After processing all patients", debug)
+    if verbose:
+        print(f"\nCompleted: {results_summary['successful']}/{results_summary['total']} successful")
+
+    if debug:
+        logger.info("=" * 80)
+        logger.info("DEBUG MODE COMPLETED")
+        logger.info("=" * 80)
+
+    return results_summary
+
+
+# -------------------------------
+# CLI обертка для запуска из командной строки
 # -------------------------------
 def main():
+    """CLI обертка для prepare_ct_tensor"""
     parser = argparse.ArgumentParser(
         description="Prepare CT DICOM volumes for MedicalNet with isotropic resampling (1x1x1 mm)")
     parser.add_argument("--input", type=str, required=True,
@@ -525,88 +652,22 @@ def main():
 
     args = parser.parse_args()
 
-    input_dir = Path(args.input)
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        results = prepare_ct_tensor(
+            input_dir=args.input,
+            output_dir=args.output,
+            log_file=args.log_file,
+            debug=args.debug,
+            force_cpu=args.force_cpu,
+            verbose=True
+        )
 
-    log_file = Path(args.log_file)
-    logger = setup_logging(log_file, debug=args.debug)
-
-    if args.debug:
-        logger.info("=" * 80)
-        logger.info("DEBUG MODE ENABLED - Detailed memory monitoring active")
-        logger.info("=" * 80)
-
-    if not input_dir.exists():
-        logger.error(f"Input directory does not exist: {input_dir}")
-        sys.exit(1)
-
-    if args.force_cpu:
-        # Отключить CUDA, если она доступна
-        import os
-        os.environ['CUDA_VISIBLE_DEVICES'] = ''
-
-        # Или в коде
-        torch.cuda.is_available()
-
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-        logger.info(f"Using CUDA device: {torch.cuda.get_device_name(device)}")
-    else:
-        device = torch.device("cpu")
-        logger.info("Using CPU device")
-    del device
-
-    patient_dirs = [d for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
-    if not patient_dirs:
-        dicom_files = [f for f in input_dir.iterdir() if f.is_file() and not f.name.startswith('.')]
-        if dicom_files:
-            patient_dirs = [input_dir]
-        else:
-            logger.error(f"No patient directories or DICOM files found in {input_dir}")
+        if results['failed'] > 0:
             sys.exit(1)
 
-    results_summary = {
-        'total': len(patient_dirs),
-        'successful': 0,
-        'failed': 0,
-        'errors': []
-    }
-
-    log_memory(logger, "[main] Before processing patients", args.debug)
-    print(f"Processing {len(patient_dirs)} patients...")
-
-    for idx, patient_dir in enumerate(patient_dirs, 1):
-        if args.debug:
-            logger.debug(f"\n{'='*60}")
-            logger.debug(f"Processing patient {idx}/{len(patient_dirs)}: {patient_dir.name}")
-            logger.debug(f"{'='*60}")
-
-        result = process_single_patient(patient_dir, output_dir, args.debug)
-
-        if result['success']:
-            results_summary['successful'] += 1
-        else:
-            results_summary['failed'] += 1
-            results_summary['errors'].append({
-                'patient': result['patient_name'],
-                'error': result['error']
-            })
-
-        # Периодическая принудительная сборка мусора
-        if idx % 10 == 0:
-            gc.collect()
-            log_memory(logger, f"[main] After processing {idx} patients (periodic GC)", args.debug)
-            print(f"Processed {idx}/{len(patient_dirs)}")
-
-    log_memory(logger, "[main] After processing all patients", args.debug)
-    print(f"\nCompleted: {results_summary['successful']}/{results_summary['total']} successful")
-
-    if args.debug:
-        logger.info("=" * 80)
-        logger.info("DEBUG MODE COMPLETED")
-        logger.info("=" * 80)
-
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

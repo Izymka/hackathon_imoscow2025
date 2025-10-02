@@ -26,6 +26,8 @@ import sys
 sys.path.append('../chest_ct_ai_classifier/src')
 sys.path.append('./chest_ct_ai_classifier/src')
 
+
+from chest_ct_ai_classifier.src.model.prepare_tensor import prepare_ct_tensor
 from chest_ct_ai_classifier.src.model.inference import MedicalModelInference
 from chest_ct_ai_classifier.src.model.config import ModelConfig
 from chest_ct_ai_classifier.src.utils.dicom_parser import parse_dicom, DicomSummary
@@ -182,38 +184,14 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     start_time = time.time()
 
-    # Вызов скрипта подготовки тензоров
-    cmd = [
-        "python", PREPARE_CT_SCRIPT,
-        "--input", str(dicom_dir),
-        "--output", str(tensor_output_dir),
-    ]
-
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    except subprocess.TimeoutExpired:
+        tensor_result = prepare_ct_tensor(dicom_dir, tensor_output_dir, debug=True)
+        logger.info("Tensors prepared", tensor_result)
+    except Exception as e:
         raise HTTPException(
-            status_code=504,
-            detail="Превышено время обработки DICOM (300 сек)"
+            status_code=509,
+            detail=str(e)
         )
-
-    # Обработка SIGKILL (OOM)
-    if process.returncode == -9:
-        raise HTTPException(
-            status_code=507,
-            detail=(
-                "Процесс обработки DICOM был завершён системой (нехватка памяти). "
-                "Попробуйте обработать файл меньшего размера или обратитесь к администратору."
-            )
-        )
-
-    if process.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ошибка обработки DICOM:[{process.returncode}] {process.stdout} {process.stderr}"
-        )
-
-    logger.info("Tensors prepared", extra={"stdout": process.stdout, "stderr": process.stderr})
 
     # Поиск созданного тензора
     tensor_files = list(tensor_output_dir.glob("*.pt"))
