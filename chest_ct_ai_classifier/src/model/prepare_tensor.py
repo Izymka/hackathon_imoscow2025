@@ -188,9 +188,9 @@ def load_multiframe_dicom(dicom_file: Path, debug: bool = False) -> dict:
         ds = pydicom.dcmread(str(dicom_file), force=True)
         log_memory(logger, f"[load_multiframe_dicom] DICOM loaded", debug)
 
-        # Получаем pixel array
-        pixel_array = ds.pixel_array.astype(np.float32)
-        log_memory(logger, f"[load_multiframe_dicom] Pixel array extracted, shape={pixel_array.shape}", debug)
+        # Получаем pixel array (используем float16 для экономии памяти)
+        pixel_array = ds.pixel_array.astype(np.float16)
+        log_memory(logger, f"[load_multiframe_dicom] Pixel array extracted, shape={pixel_array.shape}, dtype={pixel_array.dtype}", debug)
 
         # Определяем размерность
         if pixel_array.ndim == 4:
@@ -302,9 +302,9 @@ def load_dicom_series_sitk(dicom_folder: Path, debug: bool = False) -> dict:
         sitk_image = reader.Execute()
         log_memory(logger, f"[load_dicom_series] After reader.Execute()", debug)
 
-        # Получаем данные
-        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
-        log_memory(logger, f"[load_dicom_series] Image array extracted, shape={image_array.shape}", debug)
+        # Получаем данные (используем float16 для экономии памяти)
+        image_array = sitk.GetArrayFromImage(sitk_image).astype(np.float16)
+        log_memory(logger, f"[load_dicom_series] Image array extracted, shape={image_array.shape}, dtype={image_array.dtype}", debug)
         original_spacing = sitk_image.GetSpacing()
         original_size = sitk_image.GetSize()
 
@@ -425,8 +425,9 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
     log_memory(logger, f"[process_ct_volume] After cleanup #3 (cropped array)", debug)
 
     # 5. Конвертация в тензор и ресайз до финального размера
-    tensor = torch.from_numpy(normalized_array).float()
-    log_memory(logger, f"[process_ct_volume] After tensor conversion", debug)
+    # Используем float16 для экономии памяти в промежуточных операциях
+    tensor = torch.from_numpy(normalized_array).half()
+    log_memory(logger, f"[process_ct_volume] After tensor conversion (float16)", debug)
 
     del normalized_array
     gc.collect()
@@ -436,7 +437,7 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
     resized_tensor = resize_3d_tensor(tensor, TARGET_OUTPUT_SHAPE, mode='trilinear')
 
     if debug:
-        logger.debug(f"[process_ct_volume] Resized tensor shape: {resized_tensor.shape}")
+        logger.debug(f"[process_ct_volume] Resized tensor shape: {resized_tensor.shape}, dtype: {resized_tensor.dtype}")
     log_memory(logger, f"[process_ct_volume] After resizing", debug)
 
     del tensor
@@ -450,6 +451,9 @@ def process_ct_volume(dicom_folder: Path, debug: bool = False) -> torch.Tensor:
         final_tensor = resized_tensor.unsqueeze(0)
     else:
         final_tensor = resized_tensor.unsqueeze(0).unsqueeze(0)
+
+    # Конвертируем обратно в float32 для сохранения и совместимости с моделями
+    final_tensor = final_tensor.float()
 
     if debug:
         logger.debug(f"[process_ct_volume] Final tensor shape: {final_tensor.shape}, "
@@ -545,11 +549,7 @@ def prepare_ct_tensor(
         log_file = Path(log_file)
         logger = setup_logging(log_file, debug=debug)
     else:
-        logger = logging.getLogger(__name__)
-        if not logger.handlers:
-            handler = logging.StreamHandler(sys.stdout) if debug else logging.NullHandler()
-            logger.addHandler(handler)
-            logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+        logger = logging.getLogger()
 
     if debug:
         logger.info("=" * 80)
