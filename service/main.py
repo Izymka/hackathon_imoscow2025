@@ -61,6 +61,8 @@ def convert_numpy_types(obj: Any) -> Any:
 
 # Путь к скрипту подготовки данных из переменной окружения
 PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
+VALID_TYPES = os.getenv("VALID_TYPES", "CHEST,CHEST_TO_PELVIS").split(",")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -277,7 +279,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             if candidate.exists() and candidate.is_dir():
                 dicom_root = candidate
             else:
-                raise HTTPException(status_code=400, detail=f"Provided extract_subdir not found: {candidate}")
+                raise HTTPException(status_code=510, detail=f"Provided extract_subdir not found: {candidate}")
         else:
             # If the archive exploded into a single top-level folder, descend into it
             children = [p for p in extract_root.iterdir() if p.is_dir()]
@@ -287,9 +289,10 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
         try:
             summary: Optional[DicomSummary] = parse_dicom(dicom_root, True)
             if summary is None:
-                raise Exception("No DICOM files found after extraction.")
-            if summary.body_part_examined != "CHEST":
-                raise Exception("Expected body part examined to be CHEST, but got ", summary.body_part_examined)
+                raise HTTPException(511, "No DICOM files found after extraction.")
+            if summary.body_part_examined not in VALID_TYPES:
+                raise HTTPException(512,
+                                    f"Expected body part examined to be one of {VALID_TYPES}, but got {summary.body_part_examined}")
             if summary.study_uid is None:
                 raise Exception("Study UID not found")
 
@@ -353,8 +356,6 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 "result": prediction_result,
                 "dicom": dicom_summary,
             }
-
-            return convert_numpy_types(response)
 
         except Exception as e:
             metric_event(f"Ошибка обработки {zip_path.name}: {str(e)}")
