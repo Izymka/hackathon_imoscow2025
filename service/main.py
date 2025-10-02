@@ -11,6 +11,8 @@ import torch
 import time
 from pathlib import Path
 import urllib.request
+import os
+import fcntl
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -44,18 +46,37 @@ async def lifespan(app: FastAPI):
         # Создаём папку, если её нет
         model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Загружаем веса, если файл отсутствует
-        if not model_path.exists():
-            logger.info(f"📥 Загрузка весов модели...")
+        # Межпроцессная блокировка, чтобы не скачивать веса параллельно в нескольких воркерах
+        lock_path = model_dir / "weights.lock"
+        with open(lock_path, "w") as lock_file:
+            logger.info("⏳ Ожидание блокировки на загрузку весов модели...")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
-                start_time = time.time()
-                urllib.request.urlretrieve(weights_url, model_path)
-                logger.info(f"✅ Веса успешно загружены за {time.time() - start_time:.2f} сек")
-            except Exception as download_error:
-                logger.error(f"❌ Ошибка при загрузке весов: {download_error}")
-                raise
-        else:
-            logger.info(f"✅ Веса уже существуют: {model_path}")
+                # Двойная проверка после захвата блокировки
+                if not model_path.exists():
+                    logger.info("📥 Загрузка весов модели...")
+                    tmp_path = model_path.with_suffix(".tmp")
+                    try:
+                        if tmp_path.exists():
+                            tmp_path.unlink(missing_ok=True)
+                        start_time = time.time()
+                        urllib.request.urlretrieve(weights_url, str(tmp_path))
+                        # Атомарно заменяем временный файл на целевой
+                        os.replace(tmp_path, model_path)
+                        logger.info(f"✅ Веса успешно загружены за {time.time() - start_time:.2f} сек")
+                    except Exception as download_error:
+                        logger.error(f"❌ Ошибка при загрузке весов: {download_error}")
+                        # Чистим временный файл на случай частичной загрузки
+                        try:
+                            if tmp_path.exists():
+                                tmp_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        raise
+                else:
+                    logger.info(f"✅ Веса уже существуют: {model_path}")
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
         config = ModelConfig()
         ml_model = MedicalModelInference(str(model_path), config)
