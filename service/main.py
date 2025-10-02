@@ -187,7 +187,6 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
         "python", PREPARE_CT_SCRIPT,
         "--input", str(dicom_dir),
         "--output", str(tensor_output_dir),
-        "--verbose"
     ]
 
     try:
