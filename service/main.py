@@ -28,7 +28,6 @@ import sys
 sys.path.append('../chest_ct_ai_classifier/src')
 sys.path.append('./chest_ct_ai_classifier/src')
 
-
 from chest_ct_ai_classifier.src.model.prepare_tensor import prepare_ct_tensor
 from chest_ct_ai_classifier.src.model.inference import MedicalModelInference
 from chest_ct_ai_classifier.src.model.config import ModelConfig
@@ -79,6 +78,7 @@ def convert_numpy_types(obj: Any) -> Any:
             return str(obj)
         except Exception:
             return obj
+
 
 # Путь к скрипту подготовки данных из переменной окружения
 PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="DICOM Parser Service", 
+    title="DICOM Parser Service",
     version="0.1.0",
     lifespan=lifespan
 )
@@ -200,8 +200,8 @@ def read_tensor(path: Path) -> torch.Tensor:
         raise RuntimeError(f"Ошибка при чтении PyTorch файла: {e}")
 
 
-def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTasks, temp_dir: Path) -> PredictionResponse:
-
+def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTasks,
+                    temp_dir: Path) -> PredictionResponse:
     global ml_model
     if ml_model is None:
         raise RuntimeError("Модель не загружена")
@@ -232,7 +232,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     # Предсказание
     prediction = ml_model.predict(tensor)
-    #explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
+    # explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
     del tensor
     gc.collect()
 
@@ -271,8 +271,6 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
     zip_path = Path(req.zip_path)
 
     logger.info(f"Processing DICOM archive: {zip_path}")
-
-    background_tasks.add_task(metric_event, f"Обработка исследования {zip_path.name}")
 
     if not zip_path.exists():
         raise HTTPException(status_code=400, detail=f"Zip path does not exist: {zip_path}")
@@ -343,8 +341,11 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                     "path_to_study": str(dicom_root),
                     "study_uid": getattr(summary, "study_uid", None),
                     "series_uid": series_uids if series_uids is not None else getattr(summary, "series_uids", None),
-                    "probability_of_pathology": float(predict.prediction["probabilities"][1]) if isinstance(predict.prediction.get("probabilities"), (list, tuple)) and len(predict.prediction["probabilities"]) > 1 else None,
-                    "pathology": int(predict.prediction.get("prediction")) if predict.prediction.get("prediction") is not None else None,
+                    "probability_of_pathology": float(predict.prediction["probabilities"][1]) if isinstance(
+                        predict.prediction.get("probabilities"), (list, tuple)) and len(
+                        predict.prediction["probabilities"]) > 1 else None,
+                    "pathology": int(predict.prediction.get("prediction")) if predict.prediction.get(
+                        "prediction") is not None else None,
                     "processing_status": "Success",
                     "time_of_processing": float(predict.processing_time),
                 }
@@ -357,33 +358,24 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 logger.error(f"Не удалось сохранить результат в XLSX: {save_err}")
                 xlsx_result_path = None
 
-            prediction_result = {
-                "message": predict.message,
-                "processing_time": predict.processing_time,
-                "prediction": {
-                    "result": predict.prediction["prediction"],
-                    "confidence": predict.prediction["confidence"],
-                    "probabilities": list(predict.prediction["probabilities"]),
-                }
-            }
-
-            try:
-                background_tasks.add_task(metric_event,f"Успешно обработано {zip_path.name}: {json.dumps(prediction_result)}")
-            except Exception as send_err:
-                logger.warning(f"Не удалось отправить метрику: {send_err}")
-                pass
-
             return {
                 "ok": True,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
                 "result_path": xlsx_result_path,
-                "result": prediction_result,
+                "result": {
+                    "message": predict.message,
+                    "processing_time": predict.processing_time,
+                    "prediction": {
+                        "result": predict.prediction["prediction"],
+                        "confidence": predict.prediction["confidence"],
+                        "probabilities": list(predict.prediction["probabilities"]),
+                    }
+                },
                 "dicom": dicom_summary,
             }
 
         except Exception as e:
-            background_tasks.add_task(metric_event, f"Ошибка обработки {zip_path.name}: {str(e)}")
             logger.error(f"Error processing dicom {dicom_root}: {e}")
             return {
                 "ok": False,
@@ -402,24 +394,6 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
             background_tasks.add_task(cleanup_temp_dir, tmpdir)
         except Exception:
             pass
-
-
-def metric_event(message: str):
-    """Отправка события метрики (синхронно, рекомендуется вызывать через BackgroundTasks)"""
-    try:
-        response = requests.post(
-            'https://ct-scan-api.prowebcraft.ru/api/event',
-            json={'event': message},
-            headers={
-                'Content-Type': 'application/json',
-                'X-App': 'ct-ml',
-                'X-From': os.uname().nodename
-            },
-            timeout=6
-        )
-        response.raise_for_status()
-    except Exception as e:
-        logger.warning(f"Failed to send metric event: {e}")
 
 
 def cleanup_temp_dir(temp_dir: Path):
