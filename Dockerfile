@@ -36,5 +36,7 @@ USER app
 # Открытие порта
 EXPOSE 8000
 
+ENV WORKERS=1
+
 # Команда для запуска в продакшене
-CMD ["uvicorn", "service.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD uvicorn service.main:app --host 0.0.0.0 --port 8000 --workers ${WORKERS}
