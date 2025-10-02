@@ -21,6 +21,7 @@ from pydantic import BaseModel
 import sys
 
 sys.path.append('../chest_ct_ai_classifier/src')
+sys.path.append('./chest_ct_ai_classifier/src')
 
 from chest_ct_ai_classifier.src.model.inference import MedicalModelInference
 from chest_ct_ai_classifier.src.model.config import ModelConfig
@@ -158,7 +159,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     # Вызов скрипта подготовки тензоров
     cmd = [
-        "python", "../chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py",
+        "python", "./scripts/prepare_ct_medicalnet_format.py",
         "--input", str(dicom_dir),
         "--output", str(tensor_output_dir)
     ]
