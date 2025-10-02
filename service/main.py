@@ -185,7 +185,8 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     cmd = [
         "python", PREPARE_CT_SCRIPT,
         "--input", str(dicom_dir),
-        "--output", str(tensor_output_dir)
+        "--output", str(tensor_output_dir),
+        "--verbose"
     ]
 
     process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -193,7 +194,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     if process.returncode != 0:
         raise HTTPException(
             status_code=500,
-            detail=f"Ошибка обработки DICOM: {process.stderr}"
+            detail=f"Ошибка обработки DICOM:[{process.returncode}] {process.stdout} {process.stderr}"
         )
 
     logger.info("Tensors prepared", extra={"stdout": process.stdout, "stderr": process.stderr})
