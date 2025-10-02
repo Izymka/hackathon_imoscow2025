@@ -21,6 +21,7 @@ RUN pip install --upgrade pip && \
 
 # Копирование проекта (только нужные каталоги)
 COPY service/ /app/service/
+COPY chest_ct_ai_classifier/src/__init__.py /app/chest_ct_ai_classifier/src/__init__.py
 COPY chest_ct_ai_classifier/src/utils /app/chest_ct_ai_classifier/src/utils
 COPY chest_ct_ai_classifier/src/model /app/chest_ct_ai_classifier/src/model
 COPY chest_ct_ai_classifier/src/scripts /app/chest_ct_ai_classifier/src/scripts
