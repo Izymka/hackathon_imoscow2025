@@ -1,4 +1,5 @@
 import gc
+import json
 import shutil
 import tempfile
 import zipfile
@@ -360,13 +361,17 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 "message": predict.message,
                 "processing_time": predict.processing_time,
                 "prediction": {
-                    "result": int(predict.prediction["prediction"]) if predict.prediction.get("prediction") is not None else None,
-                    "confidence": float(predict.prediction["confidence"]) if predict.prediction.get("confidence") is not None else None,
-                    "probabilities": [float(x) for x in predict.prediction.get("probabilities", [])],
+                    "result": predict.prediction["prediction"],
+                    "confidence": predict.prediction["confidence"],
+                    "probabilities": list(predict.prediction["probabilities"]),
                 }
             }
 
-            background_tasks.add_task(metric_event, f"Успешно обработано {zip_path.name}: {prediction_result}")
+            try:
+                background_tasks.add_task(metric_event,f"Успешно обработано {zip_path.name}: {json.dumps(prediction_result)}")
+            except Exception as send_err:
+                logger.warning(f"Не удалось отправить метрику: {send_err}")
+                pass
 
             return {
                 "ok": True,
@@ -410,7 +415,7 @@ def metric_event(message: str):
                 'X-App': 'ct-ml',
                 'X-From': os.uname().nodename
             },
-            timeout=5
+            timeout=6
         )
         response.raise_for_status()
     except Exception as e:
