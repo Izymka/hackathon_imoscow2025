@@ -210,7 +210,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
 
     try:
         tensor_result = prepare_ct_tensor(dicom_dir, tensor_output_dir, debug=True)
-        logger.info("Tensors prepared", tensor_result)
+        logger.info("Tensors prepared: %s", tensor_result)
     except Exception as e:
         raise HTTPException(
             status_code=509,
@@ -228,7 +228,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     tensor_file = tensor_files[0]
 
     # Загрузка тензора и предсказание
-    logger.info("Reading tensor", tensor_file)
+    logger.info("Reading tensor: %s", tensor_file)
     tensor = read_tensor(tensor_file)
 
     # Предсказание
