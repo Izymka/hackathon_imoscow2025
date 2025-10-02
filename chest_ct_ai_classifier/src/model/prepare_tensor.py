@@ -550,6 +550,11 @@ def prepare_ct_tensor(
         logger = setup_logging(log_file, debug=debug)
     else:
         logger = logging.getLogger()
+        if not logger.handlers:
+            handler = logging.StreamHandler(sys.stdout) if debug else logging.NullHandler()
+            logger.addHandler(handler)
+            logger.setLevel(logging.DEBUG if debug else logging.WARNING)
+
 
     if debug:
         logger.info("=" * 80)
