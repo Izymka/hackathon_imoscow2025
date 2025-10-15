@@ -63,7 +63,7 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main_deploy'
     env:
       APP_NAME: ct-ml
     steps:

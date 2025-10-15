@@ -23,6 +23,7 @@ RUN pip install --no-cache-dir scikit-learn matplotlib
 RUN pip install --no-cache-dir openpyxl
 RUN pip install --no-cache-dir psutil
 RUN pip install --no-cache-dir requests
+RUN pip install --no-cache-dir "monai==1.5.1"
 
 # Копирование проекта (только нужные каталоги)
 COPY service/ /app/service/

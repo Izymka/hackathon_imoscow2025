@@ -1,29 +1,24 @@
+import fcntl
 import gc
-import json
+import logging
+import os
 import shutil
+# Импорты для ML модели
+import sys
 import tempfile
+import time
+import urllib.request
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional, Any, Dict
-import logging
-import asyncio
-import subprocess
-import torch
-import time
 from pathlib import Path
-import urllib.request
-import os
-import fcntl
+from typing import Optional, Any, Dict
+
 import numpy as np
 import pandas as pd
-import requests
-
+import torch
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-
-# Импорты для ML модели
-import sys
 
 sys.path.append('../chest_ct_ai_classifier/src')
 sys.path.append('./chest_ct_ai_classifier/src')
@@ -91,7 +86,7 @@ async def lifespan(app: FastAPI):
     global ml_model
     try:
         # Загрузка весов модели
-        weights_url = "https://ct-dicom-storage.website.yandexcloud.net/model/weights.pth"
+        weights_url = "https://ct-scan-api.prowebcraft.ru/weights.pth"
         model_dir = Path("./model")
         model_path = model_dir / "weights.pth"
 
@@ -209,7 +204,7 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     start_time = time.time()
 
     try:
-        tensor_result = prepare_ct_tensor(dicom_dir, tensor_output_dir, debug=True)
+        tensor_result = prepare_ct_tensor(dicom_dir, tensor_output_dir)
         logger.info("Tensors prepared: %s", tensor_result)
     except Exception as e:
         raise HTTPException(
@@ -318,6 +313,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
 
             # Convert to plain dict for JSON response
             dicom_summary = summary.to_dict() if hasattr(summary, 'to_dict') else dict(summary)
+            # Преобразуем все нестандартные типы (в т.ч. pydicom.MultiValue) к сериализуемым
+            dicom_summary = convert_numpy_types(dicom_summary)
 
             # Сохранить результат в xlsx файл
             try:
@@ -358,7 +355,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 logger.error(f"Не удалось сохранить результат в XLSX: {save_err}")
                 xlsx_result_path = None
 
-            return {
+            # Формируем payload ответа и приводим к сериализуемым типам
+            result_payload = {
                 "ok": True,
                 "extracted_to": str(extract_root),
                 "dicom_root": str(dicom_root),
@@ -373,6 +371,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 },
                 "dicom": dicom_summary,
             }
+            return convert_numpy_types(result_payload)
 
         except Exception as e:
             logger.error(f"Error processing dicom {dicom_root}: {e}")
@@ -411,7 +410,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8010,
+        port=8011,
         reload=True,
         log_level="debug"
     )

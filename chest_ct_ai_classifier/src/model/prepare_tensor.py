@@ -158,6 +158,10 @@ def scale_intensity_range(image_array: np.ndarray,
 
 def resize_3d_tensor(tensor: torch.Tensor, target_shape: tuple, mode: str = 'trilinear') -> torch.Tensor:
     """Ресайз 3D тензора до целевого размера"""
+    # На CPU F.interpolate не поддерживает float16 — приводим к float32
+    if tensor.dtype == torch.float16 and not tensor.is_cuda:
+        tensor = tensor.to(torch.float32)
+
     if tensor.ndim == 3:
         # [D, H, W] -> [1, 1, D, H, W] для интерполяции
         tensor = tensor.unsqueeze(0).unsqueeze(0)
@@ -224,7 +228,8 @@ def load_multiframe_dicom(dicom_file: Path, debug: bool = False) -> dict:
         original_size = pixel_array.shape[::-1]
 
         # Создаем SimpleITK изображение из numpy array
-        sitk_image = sitk.GetImageFromArray(pixel_array)
+        # SimpleITK не поддерживает float16, поэтому приводим к float32 для построения изображения
+        sitk_image = sitk.GetImageFromArray(pixel_array.astype(np.float32))
         sitk_image.SetSpacing(spacing[::-1])
 
         # Освобождаем DICOM dataset
@@ -268,8 +273,8 @@ def load_dicom_series_sitk(dicom_folder: Path, debug: bool = False) -> dict:
 
             if num_frames > 1:
                 return load_multiframe_dicom(first_file, debug)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[load_dicom_series] Failed to read first file {first_file}: {str(e)}")
 
         # Обычная загрузка серии файлов
         reader = sitk.ImageSeriesReader()

@@ -13,13 +13,8 @@ import gc
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 # Заменяем относительные импорты
-try:
-    from .model_generator import generate_model
-    from .lightning_module import MedicalClassificationModel
-except ImportError:
-    # Если относительный импорт не работает, используем абсолютный
-    from model_generator import generate_model
-    from lightning_module import MedicalClassificationModel
+from .model_generator import generate_model
+from .lightning_module import MedicalClassificationModel
 
 
 # Добавляем Captum
@@ -103,65 +98,192 @@ class MedicalModelInference:
 
     def _load_model(self):
         """Загрузка и инициализация модели с устойчивой подгонкой ключей state_dict."""
+        from argparse import Namespace
+        from collections import OrderedDict
+
+        print("=" * 60)
+        print("🔧 Создание модели для инференса...")
+
+        # Преобразуем конфигурацию в namespace
         config_dict = OmegaConf.to_container(self.model_config)
         config_dict['gpu_id'] = [0] if torch.cuda.is_available() else []
-        config_dict['phase'] = 'test'
+        config_dict['phase'] = 'test'  # ВАЖНО: режим теста
         config_dict['no_cuda'] = (self.device == 'cpu')
 
-        from argparse import Namespace
         args = Namespace(**config_dict)
 
         # Генерируем пустую модель целевой архитектуры
         model, _ = generate_model(args)
+        print("=" * 60)
 
         # Загружаем чекпоинт (CPU-совместимо)
-        checkpoint = torch.load(self.weights_path, map_location=('cpu' if self.device == 'cpu' else self.device), weights_only=False)
-
-        # Извлекаем исходный state_dict из разных возможных форматов
-        raw_sd = None
-        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint and isinstance(checkpoint['state_dict'], dict):
-            raw_sd = checkpoint['state_dict']
-        elif isinstance(checkpoint, dict):
-            # Если в словаре много тензоров — это, вероятно, сам state_dict
-            tensor_like = [k for k, v in checkpoint.items() if isinstance(v, torch.Tensor)]
-            if len(tensor_like) > 0:
-                raw_sd = checkpoint
-        # Если формат неизвестен, пробуем напрямую как state_dict
-        if raw_sd is None:
-            raw_sd = checkpoint if isinstance(checkpoint, dict) else {}
-
-        target_sd = model.state_dict()
-
-        # Нормализуем ключи: убираем префиксы 'model.module.', 'module.', 'model.'
-        def normalize_key(k: str) -> str:
-            for pref in ('model.module.', 'module.', 'model.'):
-                if k.startswith(pref):
-                    k = k[len(pref):]
-            return k
-
-        cleaned_sd = {}
-        matched, total = 0, 0
-        for k, v in raw_sd.items():
-            total += 1
-            nk = normalize_key(k)
-            if nk in target_sd and target_sd[nk].shape == v.shape:
-                cleaned_sd[nk] = v
-                matched += 1
-
-        # Загружаем максимально совместимую подмножину весов
-        missing, unexpected = model.load_state_dict(cleaned_sd, strict=False)
         try:
-            print(f"🔑 Загрузка весов: сопоставлено {matched}/{total}; пропущено {len(missing)}; лишних {len(unexpected)}")
-        except Exception:
-            pass
+            checkpoint = torch.load(
+                self.weights_path,
+                map_location=('cpu' if self.device == 'cpu' else self.device),
+                weights_only=False
+            )
+            print(f"📁 Загружен checkpoint. Доступные ключи: {list(checkpoint.keys())}")
+        except Exception as e:
+            print(f"❌ Ошибка загрузки checkpoint: {e}")
+            raise
 
-        # Убираем DataParallel, если есть
+        # Извлечение state_dict из разных возможных форматов
+        state_dict = None
+
+        # Попытка 1: PyTorch Lightning (.ckpt)
+        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            print("🔧 Обнаружен формат PyTorch Lightning (.ckpt)")
+
+        # Попытка 2: Стандартный PyTorch с обёрткой
+        elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+            print("🔧 Обнаружен формат model_state_dict (.pth)")
+
+        # Попытка 3: Прямой state_dict (.pth) - чистые веса
+        elif isinstance(checkpoint, dict):
+            # Проверяем, есть ли тензоры напрямую в checkpoint
+            tensor_keys = [k for k, v in checkpoint.items() if isinstance(v, torch.Tensor)]
+
+            if len(tensor_keys) > 0:
+                # Это прямой state_dict
+                state_dict = checkpoint
+                print("🔧 Обнаружен прямой state_dict (.pth)")
+            else:
+                # Возможно, это словарь с метаданными
+                # Ищем любой ключ, который может содержать веса
+                possible_keys = ['model', 'net', 'network', 'weights', 'parameters']
+                for key in possible_keys:
+                    if key in checkpoint and isinstance(checkpoint[key], dict):
+                        state_dict = checkpoint[key]
+                        print(f"🔧 Обнаружен state_dict в ключе '{key}'")
+                        break
+
+        # Попытка 4: Если это вообще не словарь (редкий случай)
+        else:
+            print("⚠️ Checkpoint не является словарем, пробуем использовать напрямую")
+            state_dict = checkpoint
+
+        # Финальная проверка
+        if state_dict is None or (isinstance(state_dict, dict) and len(state_dict) == 0):
+            print("❌ Не удалось найти state_dict в checkpoint")
+            print(
+                f"📋 Доступные ключи в checkpoint: {list(checkpoint.keys()) if isinstance(checkpoint, dict) else 'N/A'}")
+            raise ValueError("Неизвестный формат checkpoint. Убедитесь, что файл содержит веса модели.")
+
+        # Получаем ключи целевой модели для сравнения
+        target_keys = set(model.state_dict().keys())
+        sample_target_key = list(target_keys)[0] if target_keys else ""
+        sample_source_key = list(state_dict.keys())[0] if state_dict else ""
+
+        print(f"🔍 Пример ключа в модели: {sample_target_key}")
+        print(f"🔍 Пример ключа в checkpoint: {sample_source_key}")
+
+        # Определяем, нужно ли добавлять или удалять префикс
+        needs_module_prefix = any(k.startswith('module.') for k in target_keys)
+        has_module_prefix = any(k.startswith('module.') for k in state_dict.keys())
+
+        print(f"🔧 Модель требует 'module.' префикс: {needs_module_prefix}")
+        print(f"🔧 Checkpoint имеет 'module.' префикс: {has_module_prefix}")
+
+        # Обработка префиксов
+        new_state_dict = OrderedDict()
+        skipped_keys = []
+
+        for k, v in state_dict.items():
+            # Пропускаем служебные параметры (расширенный список)
+            skip_patterns = [
+                'loss_fn', 'criterion', 'optimizer', 'scheduler',
+                'class_weights', 'loss_weights', 'weight_decay',
+                'learning_rate', 'momentum', 'best_score'
+            ]
+
+            if any(pattern in k for pattern in skip_patterns):
+                skipped_keys.append(k)
+                continue
+
+            new_key = k
+
+            # Убираем лишние префиксы
+            for prefix in ['model.module.', 'model.', 'net.', 'encoder.']:
+                if new_key.startswith(prefix):
+                    new_key = new_key[len(prefix):]
+                    break
+
+            # Специальная обработка для 'module.'
+            if new_key.startswith('module.'):
+                new_key = new_key[7:]  # убираем 'module.'
+
+            # Добавляем 'module.' если модель требует, а его нет
+            if needs_module_prefix and not new_key.startswith('module.'):
+                new_key = 'module.' + new_key
+            # Убираем 'module.' если модель не требует, а он есть
+            elif not needs_module_prefix and new_key.startswith('module.'):
+                new_key = new_key[7:]
+
+            new_state_dict[new_key] = v
+
+        print(f"🔑 Обработано ключей: {len(new_state_dict)}")
+        if skipped_keys:
+            print(
+                f"⏭️  Пропущено служебных ключей: {len(skipped_keys)} ({', '.join(skipped_keys[:3])}{'...' if len(skipped_keys) > 3 else ''})")
+        if new_state_dict:
+            print(f"🔍 Пример преобразованного ключа: {list(new_state_dict.keys())[0]}")
+
+        # Загрузка state_dict в модель с обработкой ошибок
+        try:
+            missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
+
+            # Считаем успешно загруженные ключи
+            loaded_keys = len(new_state_dict) - len(unexpected_keys)
+            total_model_keys = len(model.state_dict())
+
+            if missing_keys:
+                print(
+                    f"⚠️ Отсутствующие ключи ({len(missing_keys)}): {missing_keys[:3]}{'...' if len(missing_keys) > 3 else ''}")
+            if unexpected_keys:
+                print(
+                    f"⚠️ Неожиданные ключи ({len(unexpected_keys)}): {unexpected_keys[:3]}{'...' if len(unexpected_keys) > 3 else ''}")
+
+            # Успешная загрузка
+            if not missing_keys and not unexpected_keys:
+                print("✅ Все ключи загружены успешно!")
+            elif loaded_keys >= total_model_keys * 0.95:  # Загружено >= 95%
+                print(
+                    f"✅ Загружено {loaded_keys}/{total_model_keys} ключей ({loaded_keys / total_model_keys * 100:.1f}%) - достаточно для работы!")
+            else:
+                print(
+                    f"🔄 Загружено {loaded_keys}/{total_model_keys} ключей ({loaded_keys / total_model_keys * 100:.1f}%)")
+
+        except Exception as e:
+            print(f"❌ Ошибка при strict загрузке: {e}")
+            print("🔄 Пробуем загрузить только совпадающие ключи...")
+
+            # Загружаем только совпадающие ключи по размеру
+            model_dict = model.state_dict()
+            filtered_dict = {
+                k: v for k, v in new_state_dict.items()
+                if k in model_dict and v.shape == model_dict[k].shape
+            }
+
+            model_dict.update(filtered_dict)
+            model.load_state_dict(model_dict)
+            print(
+                f"🔄 Загружено {len(filtered_dict)} из {len(new_state_dict)} ключей ({len(filtered_dict) / len(model_dict) * 100:.1f}%)")
+
+        # Убираем DataParallel wrapper если он есть
         if hasattr(model, 'module'):
+            print("🔧 Убираем DataParallel wrapper...")
             model = model.module
 
         # Перемещаем модель на нужное устройство
         model = model.to(self.device)
         model.eval()
+
+        print("✅ Модель успешно загружена и готова к инференсу!")
+        print("=" * 60)
+
         return model
 
     def _validate_input_tensor(self, tensor: torch.Tensor) -> torch.Tensor:
