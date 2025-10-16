@@ -1,0 +1,24 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="collect_dataset Combined from CT_LUNGCANCER_500" type="PythonConfigurationType" factoryName="Python">
+    <module name="hackathon_imoscow2025" />
+    <option name="ENV_FILES" value="" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <option name="SDK_HOME" value="" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/chest_ct_ai_classifier/src/parser" />
+    <option name="IS_MODULE_SDK" value="true" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/chest_ct_ai_classifier/src/parser/collect_dataset.py" />
+    <option name="PARAMETERS" value="--source=&quot;\\192.168.31.132\Storage\data_sets\hackathon2025\CT_LUNGCANCER_500\dicom&quot; --target=\\192.168.31.132\DS\DataSets\hackathon2025\dataset_combined --studies_csv=&quot;https://docs.google.com/spreadsheets/d/1ZiJOzWJOVp7z4BvzKtEKqULs_4rmf2f7S7KpSu_791o/edit?usp=sharing&quot; --csv_delim=&quot;;&quot; --csv_encoding=&quot;utf-8-sig&quot; --transfer=1 --multiple-series-strategy=largest" />
+    <option name="SHOW_COMMAND_LINE" value="false" />
+    <option name="EMULATE_TERMINAL" value="false" />
+    <option name="MODULE_MODE" value="false" />
+    <option name="REDIRECT_INPUT" value="false" />
+    <option name="INPUT_FILE" value="" />
+    <method v="2" />
+  </configuration>
+</component>

@@ -24,7 +24,7 @@ if USE_ROBOCOPY:
     check_network = subprocess.run(['net', 'use'], capture_output=True, text=True)
 
 
-def extract_archive(file, dicom_path):
+def extract_archive(file, dicom_path, into_subdir=False):
     # If this is a file and looks like an archive, check for extracted directory
     try:
         if file.is_file():
@@ -72,6 +72,9 @@ def extract_archive(file, dicom_path):
             elif name_lower.endswith(".gz") and not (name_lower.endswith(".tar.gz")):
                 base_name = file.name[:-3]  # strip ".gz"
                 target_file = dicom_path / base_name
+                if into_subdir:
+                    target_file = dicom_path / base_name / base_name
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
 
                 if not target_file.exists():
                     logging.info("GZ archive found: %s. Extracting to: %s", file.name, target_file)
@@ -109,11 +112,33 @@ def is_google_spreadsheet_url(url_or_path):
 
 
 def convert_google_sheet_url_to_csv(google_sheet_url):
-    """Конвертирует ссылку на Google Spreadsheet в ссылку для скачивания CSV"""
+    """Конвертирует ссылку на Google Spreadsheet в ссылку для скачивания CSV
+
+    Поддерживает выгрузку конкретного листа по параметру gid в URL.
+    Например: https://docs.google.com/spreadsheets/d/SHEET_ID/edit?gid=730346340#gid=730346340
+    будет экспортировать лист с gid=730346340
+    """
     if '/edit' in google_sheet_url:
         # Извлекаем ID документа
         sheet_id = google_sheet_url.split('/d/')[1].split('/')[0]
-        return f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv'
+
+        # Извлекаем gid (идентификатор листа), если он есть в URL
+        gid = None
+        if 'gid=' in google_sheet_url:
+            # Ищем gid в параметрах URL или в якоре (#gid=...)
+            import re
+            gid_match = re.search(r'gid=(\d+)', google_sheet_url)
+            if gid_match:
+                gid = gid_match.group(1)
+
+        # Формируем URL для экспорта
+        export_url = f'https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv'
+
+        # Добавляем gid, если он был найден
+        if gid:
+            export_url += f'&gid={gid}'
+
+        return export_url
     return google_sheet_url
 
 
@@ -163,7 +188,13 @@ def run():
     parser.add_argument('--labels', default='binary', choices=['binary', 'all'],
                         help='What to put into labels.csv: binary (patology/pathology) or all (all columns from source)')
 
+    parser.add_argument('--label-field', default='id')
+
+
+
     args = parser.parse_args()
+
+    label_field = args.label_field
 
     config_logger()
 
@@ -219,6 +250,25 @@ def run():
         output_fieldnames = ['filename'] + ordered_columns
     logging.info("Режим сохранения меток: %s. Поля итогового CSV: %s", args.labels, output_fieldnames)
 
+    def create_output_row(study_id, row, label_value, args):
+        filename = study_id + '.pt'
+
+        if args.labels == 'binary':
+            out_row = {
+                'filename': study_id + '.pt',
+                'label': label_value
+            }
+        else:
+            # Переносим все поля из исходной строки + добавляем filename
+            out_row = {'filename': study_id + '.pt'}
+            if isinstance(row, dict):
+                for k, v in row.items():
+                    if k == label_field:
+                        continue
+                    out_row[k] = v
+
+        return out_row
+
     def move_dicom_files(dicom_series_path, target_dir):
         dicom_series_path = Path(os.path.normpath(str(dicom_series_path)))
         start_time = time.time()
@@ -265,9 +315,11 @@ def run():
     for row in rows:
         i += 1
         nii_gz_train_set=False
-        id_labels = ['id', 'VolumeName']
-        study_id = (row.get('id', '') or row.get('VolumeName')).strip()
+        study_id = row.get(label_field, '').strip()
         if study_id.endswith('.nii.gz'):
+            study_id = study_id[:-3]
+            nii_gz_train_set=True
+        elif study_id.endswith('.nii.pt'):
             study_id = study_id[:-3]
             nii_gz_train_set=True
 
@@ -300,20 +352,10 @@ def run():
                     stats['skipped_no_dicom'] += 1
                     continue
                 if args.labels_only:
-                    if args.labels == 'binary':
-                        out_row = {
-                            'filename': study_id + '.pt',
-                            'label': label_value
-                        }
-                    else:
-                        # Переносим все поля из исходной строки + добавляем filename
-                        out_row = {'filename': study_id + '.pt'}
-                        if isinstance(row, dict):
-                            for k, v in row.items():
-                                out_row[k] = v
+                    out_row = create_output_row(study_id, row, label_value, args)
                     write_to_csv(out_row, target_path / 'labels.csv', output_fieldnames)
                     continue
-                extract_archive(dcom_tar, source_path)
+                extract_archive(dcom_tar, source_path, into_subdir=nii_gz_train_set)
                 
             if reading_study_id_from_dicom:
                 summary = parse_dicom(dicom_dir)
@@ -327,6 +369,7 @@ def run():
                 logging.info("  🕵️  Found DICOM directory: %s", dicom_dir)
                 if study_id.endswith('.nii'):
                     study_id = study_id[:-4]
+                study_id = Path(study_id).stem
                 target_dir = target_path / study_id
                 if do_transfer:
                     if not target_dir.exists() or len(list(target_dir.iterdir())) == 0:
@@ -336,17 +379,7 @@ def run():
                             # move_dicom_files returned False (multiple series skip)
                             stats['skipped_multiple_series'] += 1
                         elif move_result:
-                            if args.labels == 'binary':
-                                out_row = {
-                                    'filename': study_id + '.pt',
-                                    'label': label_value
-                                }
-                            else:
-                                # Переносим все поля из исходной строки + добавляем filename
-                                out_row = {'filename': study_id + '.pt'}
-                                if isinstance(row, dict):
-                                    for k, v in row.items():
-                                        out_row[k] = v
+                            out_row = create_output_row(study_id, row, label_value, args)
                             write_to_csv(out_row, target_path / 'labels.csv', output_fieldnames)
                             stats['processed'] += 1
                     else:
