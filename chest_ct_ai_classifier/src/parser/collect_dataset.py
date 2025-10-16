@@ -1,6 +1,7 @@
 import argparse
 import csv
 from datetime import datetime
+import gzip
 import io
 import logging
 import os
@@ -66,26 +67,39 @@ def extract_archive(file, dicom_path):
                         logging.exception("Failed to extract zip archive: %s", file)
                 else:
                     logging.info("Already extracted: %s", target_dir)
+
+            # handle .gz archives (not .tar.gz which is already handled above)
+            elif name_lower.endswith(".gz") and not (name_lower.endswith(".tar.gz")):
+                base_name = file.name[:-3]  # strip ".gz"
+                target_file = dicom_path / base_name
+
+                if not target_file.exists():
+                    logging.info("GZ archive found: %s. Extracting to: %s", file.name, target_file)
+                    try:
+                        with gzip.open(file, 'rb') as gz_file:
+                            with open(target_file, 'wb') as out_file:
+                                shutil.copyfileobj(gz_file, out_file)
+                        logging.info("GZ extraction completed: %s", target_file)
+                    except Exception:
+                        logging.exception("Failed to extract gz archive: %s", file)
+                else:
+                    logging.info("Already extracted: %s", target_file)
     except PermissionError:
         logging.error("Permission denied when processing file: %s", file)
     except Exception:
         logging.exception("Error processing file: %s", file)
 
 
-def write_to_csv(result, output_file, clear_file=False):
-    fieldnames = ['filename', 'label']
+def write_to_csv(result, output_file, fieldnames):
+    output_file = Path(output_file)
+    file_exists = output_file.exists()
 
-    if not Path(output_file).exists():
-        # Создаем/перезаписываем файл с заголовком
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+    mode = 'a' if file_exists else 'w'
+    with open(output_file, mode, newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
+        if not file_exists:
             writer.writeheader()
-            writer.writerow(result)
-    else:
-        # Добавляем строку к существующему файлу
-        with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writerow(result)
+        writer.writerow(result)
 
 def is_google_spreadsheet_url(url_or_path):
     """Проверяет, является ли переданный путь ссылкой на Google Spreadsheet"""
@@ -141,10 +155,13 @@ def run():
     parser.add_argument('--csv_encoding', default='utf-8', help='csv encoding')
     parser.add_argument('--read-study-id-from-dicom', default=False)
     parser.add_argument('--transfer', default=True)
+    parser.add_argument('--labels-only', default=False)
     parser.add_argument("--multiple-series-strategy",
                         default="skip",
                         choices=["skip", "first", "rich", "largest"],
                         help="How to handle multiple series in a study")
+    parser.add_argument('--labels', default='binary', choices=['binary', 'all'],
+                        help='What to put into labels.csv: binary (patology/pathology) or all (all columns from source)')
 
     args = parser.parse_args()
 
@@ -186,6 +203,21 @@ def run():
         with open(studies_csv_file, 'r', encoding=args.csv_encoding) as csvfile:
             csvfile = csv.DictReader(csvfile, delimiter=args.csv_delim)
             rows = list(csvfile)
+
+    # Определяем поля для выходного CSV в зависимости от режима меток
+    if args.labels == 'binary':
+        output_fieldnames = ['filename', 'label']
+    else:
+        # Собираем упорядоченное объединение всех колонок из исходного CSV
+        ordered_columns = []
+        seen = set()
+        for r in rows:
+            for k in (r.keys() if isinstance(r, dict) else []):
+                if k not in seen:
+                    seen.add(k)
+                    ordered_columns.append(k)
+        output_fieldnames = ['filename'] + ordered_columns
+    logging.info("Режим сохранения меток: %s. Поля итогового CSV: %s", args.labels, output_fieldnames)
 
     def move_dicom_files(dicom_series_path, target_dir):
         dicom_series_path = Path(os.path.normpath(str(dicom_series_path)))
@@ -232,7 +264,13 @@ def run():
     i = 0
     for row in rows:
         i += 1
-        study_id = row.get('id', '').strip()
+        nii_gz_train_set=False
+        id_labels = ['id', 'VolumeName']
+        study_id = (row.get('id', '') or row.get('VolumeName')).strip()
+        if study_id.endswith('.nii.gz'):
+            study_id = study_id[:-3]
+            nii_gz_train_set=True
+
         label_value = row.get('patology') or row.get('pathology')
         stats['total'] += 1
         logging.info("[%d/%d] Processing study ID: %s", i, len(rows), study_id)
@@ -240,13 +278,43 @@ def run():
         try:
             dicom_dir = source_path / study_id
             if not dicom_dir.exists():
-                dcom_tar = source_path / (study_id + '.tar.gz')
+
+                if nii_gz_train_set:
+                    # Разбиваем study_id на части по подчеркиванию
+                    # Например: train_100_a_2 -> ['train', '100', 'a', '2']
+                    parts = study_id.split('_')
+                    if len(parts) >= 3:
+                        # Формируем первую поддиректорию: train_100
+                        first_subdir = '_'.join(parts[:2])
+                        # Формируем вторую поддиректорию: train_100_a
+                        second_subdir = '_'.join(parts[:3])
+                        # Итоговый путь: source_path / train_100 / train_100_a / train_100_a_2.nii.gz
+                        dcom_tar = source_path / first_subdir / second_subdir / (study_id + '.gz')
+                    else:
+                        # Если формат не соответствует ожидаемому, используем простой путь
+                        dcom_tar = source_path / 'train' / (study_id + '.nii.gz')
+                else:
+                    dcom_tar = source_path / (study_id + '.tar.gz')
                 if not dcom_tar.exists():
                     logging.warning("  ❌  DICOM directory and archive not found for study_id: %s", dicom_dir)
                     stats['skipped_no_dicom'] += 1
                     continue
+                if args.labels_only:
+                    if args.labels == 'binary':
+                        out_row = {
+                            'filename': study_id + '.pt',
+                            'label': label_value
+                        }
+                    else:
+                        # Переносим все поля из исходной строки + добавляем filename
+                        out_row = {'filename': study_id + '.pt'}
+                        if isinstance(row, dict):
+                            for k, v in row.items():
+                                out_row[k] = v
+                    write_to_csv(out_row, target_path / 'labels.csv', output_fieldnames)
+                    continue
                 extract_archive(dcom_tar, source_path)
-
+                
             if reading_study_id_from_dicom:
                 summary = parse_dicom(dicom_dir)
                 study_id = summary.study_uid
@@ -268,10 +336,18 @@ def run():
                             # move_dicom_files returned False (multiple series skip)
                             stats['skipped_multiple_series'] += 1
                         elif move_result:
-                            write_to_csv({
-                                'filename': study_id + '.pt',
-                                'label': label_value
-                            }, target_path / 'labels.csv')
+                            if args.labels == 'binary':
+                                out_row = {
+                                    'filename': study_id + '.pt',
+                                    'label': label_value
+                                }
+                            else:
+                                # Переносим все поля из исходной строки + добавляем filename
+                                out_row = {'filename': study_id + '.pt'}
+                                if isinstance(row, dict):
+                                    for k, v in row.items():
+                                        out_row[k] = v
+                            write_to_csv(out_row, target_path / 'labels.csv', output_fieldnames)
                             stats['processed'] += 1
                     else:
                         logging.info("  😏  Target directory already exists: %s", target_dir)
