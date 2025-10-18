@@ -12,7 +12,6 @@ class MedicalTensorDataset(Dataset):
         data_root: путь к папке с тензорами (.pt файлами)
         img_list: путь к CSV файлу с колонками 'filename' и 'label'
         sets: объект конфигурации (опционально)
-        transform: MONAI-трансформации, которые работают с torch.Tensor
         """
         self.data_root = data_root
         self.labels_df = pd.read_csv(img_list)

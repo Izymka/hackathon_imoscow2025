@@ -7,8 +7,52 @@ from functools import partial
 
 __all__ = [
     'ResNet', 'resnet10', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
-    'resnet152', 'resnet200'
+    'resnet152', 'resnet200', 'SpatialAttentionEncoder'
 ]
+
+
+class SpatialAttentionEncoder(nn.Module):
+    """Пространственный attention энкодер для 3D CNN"""
+
+    def __init__(self, in_channels, reduction_ratio=8):
+        super(SpatialAttentionEncoder, self).__init__()
+
+        # Channel attention branch
+        self.avg_pool = nn.AdaptiveAvgPool3d(1)
+        self.max_pool = nn.AdaptiveMaxPool3d(1)
+
+        # Shared MLP for channel attention
+        self.channel_mlp = nn.Sequential(
+            nn.Conv3d(in_channels, in_channels // reduction_ratio, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(in_channels // reduction_ratio, in_channels, kernel_size=1, bias=False)
+        )
+
+        # Spatial attention branch
+        self.spatial_conv = nn.Sequential(
+            nn.Conv3d(2, 1, kernel_size=7, padding=3, bias=False),
+            nn.BatchNorm3d(1)
+        )
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # Channel attention
+        avg_out = self.channel_mlp(self.avg_pool(x))
+        max_out = self.channel_mlp(self.max_pool(x))
+        channel_attention = self.sigmoid(avg_out + max_out)
+        x_channel = x * channel_attention
+
+        # Spatial attention
+        avg_out_spatial = torch.mean(x_channel, dim=1, keepdim=True)
+        max_out_spatial, _ = torch.max(x_channel, dim=1, keepdim=True)
+        spatial_input = torch.cat([avg_out_spatial, max_out_spatial], dim=1)
+        spatial_attention = self.sigmoid(self.spatial_conv(spatial_input))
+
+        # Apply spatial attention
+        x_out = x_channel * spatial_attention
+
+        return x_out
 
 
 def conv3x3x3(in_planes, out_planes, stride=1, dilation=1):
@@ -119,9 +163,11 @@ class ResNet(nn.Module):
                  sample_input_W,
                  num_seg_classes,  # для совместимости, но используем как num_classes
                  shortcut_type='B',
-                 no_cuda=False):
+                 no_cuda=False,
+                 use_spatial_attention=False):
         self.inplanes = 64
         self.no_cuda = no_cuda
+        self.use_spatial_attention = use_spatial_attention
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv3d(
             1,
@@ -139,6 +185,11 @@ class ResNet(nn.Module):
             block, 128, layers[1], shortcut_type, stride=2)
         self.layer3 = self._make_layer(
             block, 256, layers[2], shortcut_type, stride=1, dilation=2)
+
+        # Spatial Attention после layer3
+        if self.use_spatial_attention:
+            self.spatial_attention = SpatialAttentionEncoder(256 * block.expansion)
+
         self.layer4 = self._make_layer(
             block, 512, layers[3], shortcut_type, stride=1, dilation=4)
 
@@ -151,7 +202,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
-                m.weight = nn.init.kaiming_normal_(m.weight, mode='fan_out')  # исправлено на kaiming_normal_
+                m.weight = nn.init.kaiming_normal_(m.weight, mode='fan_out')
             elif isinstance(m, nn.BatchNorm3d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -190,6 +241,11 @@ class ResNet(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
+
+        # Применяем spatial attention после layer3
+        if self.use_spatial_attention:
+            x = self.spatial_attention(x)
+
         x = self.layer4(x)
 
         # Классификационный forward

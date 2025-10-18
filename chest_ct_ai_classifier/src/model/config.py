@@ -13,6 +13,9 @@ class ModelConfig:
     model_depth: int = 34
     resnet_shortcut: str = "A"
 
+    # Spatial Attention
+    use_spatial_attention: bool = False  # включение/выключение spatial attention encoder
+
     # ========== INPUT DIMENSIONS ==========
     input_W: int = 256
     input_H: int = 256
