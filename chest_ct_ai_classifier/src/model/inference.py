@@ -347,7 +347,7 @@ class MedicalModelInference:
                 'logits': logits_np.squeeze()
             }
 
-    def explain_prediction(self, input_tensor: torch.Tensor, target_class: Optional[int] = None,
+    def explain_prediction(self, input_tensor: torch.Tensor, target_class: Optional[int] = 1,
                            method: str = "saliency", visualize: bool = True,
                            threshold: float = 0.1, alpha: float = 0.7, save_png: bool = False):
         """
@@ -391,7 +391,7 @@ class MedicalModelInference:
                 explainer = IntegratedGradients(self.model)
                 # Используем меньше шагов для экономии памяти
                 with torch.no_grad():
-                    attributions = explainer.attribute(input_tensor, target=target_class, n_steps=15)
+                    attributions = explainer.attribute(input_tensor, target=target_class, n_steps=2)
             elif method == "saliency":
                 explainer = Saliency(self.model)
                 with torch.no_grad():
