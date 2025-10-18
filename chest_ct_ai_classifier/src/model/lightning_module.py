@@ -414,13 +414,15 @@ class MedicalClassificationModel(pl.LightningModule):
         )
 
         # Планировщик learning rate
-        if self.hparams.lr_scheduler == 'plateau':
+        lr_scheduler = self.hparams.get('lr_scheduler', 'plateau')
+
+        if lr_scheduler == 'plateau':
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode='max',  # для F1 score
-                factor=self.hparams.lr_factor,
-                patience=self.hparams.lr_patience,
-                min_lr=self.hparams.lr_min,
+                mode='max',  # для метрик вроде F1, AUROC
+                factor=self.hparams.get('lr_factor', 0.5),
+                patience=self.hparams.get('lr_patience', 5),
+                min_lr=self.hparams.get('lr_min', 1e-7),
                 verbose=True
             )
 
@@ -428,17 +430,20 @@ class MedicalClassificationModel(pl.LightningModule):
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": scheduler,
-                    "monitor": "val_f1",
+                    "monitor": "val_auroc",  # Мониторим val_auroc
                     "interval": "epoch",
                     "frequency": 1,
                 }
             }
 
-        elif self.hparams.lr_scheduler == 'cosine':
+        elif lr_scheduler == 'cosine':
+            # Получаем T_max из гиперпараметров или используем 25 по умолчанию
+            t_max = self.hparams.get('n_epochs', 50) // 2
+
             scheduler = CosineAnnealingLR(
                 optimizer,
-                T_max=25,  # половина от максимального числа эпох
-                eta_min=self.hparams.lr_min
+                T_max=t_max,
+                eta_min=self.hparams.get('lr_min', 1e-7)
             )
 
             return {
@@ -450,7 +455,13 @@ class MedicalClassificationModel(pl.LightningModule):
                 }
             }
 
+        elif lr_scheduler == 'none':
+            # Без планировщика - константный LR
+            return optimizer
+
         else:
+            # По умолчанию - без планировщика
+            print(f"⚠️  Неизвестный lr_scheduler: {lr_scheduler}, используется константный LR")
             return optimizer
 
     def predict_step(self, batch: tuple, batch_idx: int) -> Dict[str, torch.Tensor]:

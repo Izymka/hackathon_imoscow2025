@@ -35,7 +35,6 @@ from datasets.medical_tensors import MedicalTensorDataset
 from model_generator import generate_model
 from lightning_module import MedicalClassificationModel
 from config import ModelConfig
-from inference import MedicalModelInference
 
 # === MONAI аугментации ===
 from monai.transforms import (
@@ -88,54 +87,6 @@ def get_val_transforms() -> Compose:
         #ToTensor(),
     ])
 
-
-def test_inference_example():
-    """Пример тестирования inference."""
-    rprint("\n🔬 [bold blue]Тестирование inference модуля...[/bold blue]")
-
-    try:
-        from config import ModelConfig
-
-        # Создаем тестовую модель
-        cfg = ModelConfig()
-        cfg.input_D = 256
-        cfg.input_H = 256
-        cfg.input_W = 256
-        cfg.n_seg_classes = 2
-
-        # Тестовый тензор 256x256x256
-        test_tensor = torch.randn(1, 1, 256, 256, 256)
-        rprint(f"📊 Тестовый тензор: {test_tensor.shape}")
-
-        # Создание inference объекта (укажите путь к реальному чекпоинту)
-        checkpoint_path = "path/to/your/checkpoint.ckpt"  # ЗАМЕНИТЕ НА РЕАЛЬНЫЙ ПУТЬ
-
-        if Path(checkpoint_path).exists():
-            inference = MedicalModelInference(
-                weights_path=checkpoint_path,
-                model_config=cfg
-            )
-
-            # Предсказание
-            prediction = inference.predict(test_tensor)
-            rprint(f"🎯 Результат предсказания: {prediction}")
-
-            # Батчевое предсказание
-            batch_tensor = torch.randn(2, 1, 256, 256, 256)
-            batch_predictions = inference.predict_batch(batch_tensor)
-            rprint(f"📦 Пакетные предсказания: {len(batch_predictions)} образцов")
-
-            rprint("✅ [bold green]Inference тестирование завершено успешно![/bold green]")
-        else:
-            rprint(f"⚠️ [yellow]Чекпоинт не найден: {checkpoint_path}[/yellow]")
-            rprint("   [yellow]Создаем тестовый inference объект...[/yellow]")
-
-            # Создаем тестовый inference с фейковым путем (для демонстрации интерфейса)
-            # В реальности используйте существующий чекпоинт
-
-    except Exception as e:
-        rprint(f"❌ [bold red]Ошибка inference тестирования:[/bold red] {str(e)}")
-        console.print_exception(show_locals=True)
 
 class CrossValidationTrainer:
     """Класс для проведения кросс-валидации."""
@@ -292,12 +243,12 @@ class CrossValidationTrainer:
             ],
             accelerator=accelerator,
             devices=devices,
+            accumulate_grad_batches=getattr(self.cfg, 'accumulate_grad_batches', 1),  # Gradient accumulation
             fast_dev_run=self.cfg.ci_test,
             log_every_n_steps=min(10, len(train_loader) // 4),
             enable_progress_bar=True,
             enable_model_summary=True,
             gradient_clip_val=self.cfg.gradient_clip_val,
-            #precision=16 if accelerator == "gpu" else 32,  # mixed precision
             precision=32,
         )
 
@@ -546,39 +497,6 @@ def main():
         console.print_exception(show_locals=True)
         return None
 
-
-def test_inference_example():
-    """Пример тестирования inference."""
-    rprint("\n🔬 [bold blue]Тестирование inference модуля...[/bold blue]")
-
-    try:
-        # Тестовый тензор
-        test_tensor = torch.randn(1, 1, 128, 128, 128)
-        rprint(f"📊 Тестовый тензор: {test_tensor.shape}")
-
-        # Создание inference объекта
-        inference = MedicalModelInference(
-            weights_path="model/outputs/checkpoints/best_weights.pth",
-            model_config=ModelConfig()
-        )
-
-        # Предсказание
-        prediction = inference.predict(test_tensor)
-        rprint(f"🎯 Результат предсказания: {prediction}")
-
-        # Батчевое предсказание
-        batch_tensor = torch.randn(3, 1, 128, 128, 128)
-        batch_predictions = inference.predict_batch(batch_tensor)
-        rprint(f"📦 Пакетные предсказания: {batch_predictions}")
-
-        rprint("✅ [bold green]Inference тестирование завершено успешно![/bold green]")
-
-    except Exception as e:
-        rprint(f"❌ [bold red]Ошибка inference тестирования:[/bold red] {str(e)}")
-
-
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == "--test-inference":
-        test_inference_example()
-    else:
-        main()
+    main()
+        

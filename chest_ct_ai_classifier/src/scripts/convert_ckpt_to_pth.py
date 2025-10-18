@@ -18,6 +18,9 @@ def convert_checkpoint(input_ckpt: str, output_pth: str):
     # Иногда Lightning добавляет префикс "model.", его можно убрать:
     state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
 
+    state_dict = {
+        "state_dict": state_dict
+    }
     # Сохраняем в .pth
     torch.save(state_dict, output_pth)
 

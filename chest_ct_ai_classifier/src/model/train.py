@@ -143,11 +143,15 @@ def train(data_loader, model, optimizer, scheduler,
             scheduler.step()
 
         # Текущий lr (может быть несколько групп)
-        lrs = scheduler.get_last_lr()
-        if len(lrs) > 1:
-            logger.info('Learning rates: base=%.6f, new=%.6f', lrs[0], lrs[1])
-        else:
-            logger.info('Learning rate: %.6f', lrs[0])
+        try:
+            lrs = scheduler.get_last_lr()
+            if len(lrs) > 1:
+                logger.info('Learning rates: base=%.6f, new=%.6f', lrs[0], lrs[1])
+            else:
+                logger.info('Learning rate: %.6f', lrs[0])
+        except AttributeError:
+            # Для scheduler без get_last_lr()
+            logger.info('Learning rate: %.6f', optimizer.param_groups[0]['lr'])
 
         epoch_loss = 0.0
         epoch_correct = 0
@@ -164,7 +168,10 @@ def train(data_loader, model, optimizer, scheduler,
             loss.backward()
 
             # Gradient clipping для стабильности
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.gradient_clip_val)
+
+            # Gradient clipping для стабильности
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.gradient_clip_val)
 
             optimizer.step()
 
@@ -226,9 +233,22 @@ def train(data_loader, model, optimizer, scheduler,
             }, best_model_path)
             logger.info('⭐ Новая лучшая модель сохранена! Loss: %.4f', best_loss)
 
-        # ReduceLROnPlateau – step() после эпохи
+        # ИСПРАВЛЕНИЕ: Обновление scheduler в зависимости от типа
         if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+            # ReduceLROnPlateau требует метрику
             scheduler.step(avg_epoch_loss)
+            logger.info('📉 Scheduler step (ReduceLROnPlateau): loss=%.4f', avg_epoch_loss)
+        elif isinstance(scheduler, optim.lr_scheduler.CosineAnnealingLR):
+            # CosineAnnealingLR вызывается после каждой эпохи
+            scheduler.step()
+            logger.info('📉 Scheduler step (CosineAnnealingLR)')
+        elif isinstance(scheduler, optim.lr_scheduler.ExponentialLR):
+            # ExponentialLR уже вызван в начале эпохи
+            pass
+        elif not isinstance(scheduler, optim.lr_scheduler.LambdaLR):
+            # Для остальных scheduler (кроме dummy LambdaLR)
+            scheduler.step()
+            logger.info('📉 Scheduler step')
 
     logger.info('=' * 60)
     logger.info('✅ Обучение завершено! Лучший loss: %.4f', best_loss)

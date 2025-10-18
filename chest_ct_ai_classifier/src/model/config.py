@@ -14,25 +14,26 @@ class ModelConfig:
     resnet_shortcut: str = "A"
 
     # ========== INPUT DIMENSIONS ==========
-    input_W: int = 256  # изменено с 128
-    input_H: int = 256  # изменено с 128  
-    input_D: int = 256  # изменено с 128
+    input_W: int = 256
+    input_H: int = 256
+    input_D: int = 256
 
     # ========== CLASSIFICATION PARAMETERS ==========
     n_seg_classes: int = 2  # бинарная классификация
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 3
+    batch_size: int = 3  # Физический batch size для 256³ тензоров на 8GB VRAM
+    accumulate_grad_batches: int = 3  # Эффективный batch size = 3 * 3 = 9
     learning_rate: float = 1e-4
-    n_epochs: int = 50
+    n_epochs: int = 75  #
     num_workers: int = 6
-    optimizer: str = "adam"
+    optimizer: str = "adamw"
     momentum: float = 0.9
 
     # ========== ADVANCED TRAINING PARAMETERS ==========
     # Оптимизация
-    weight_decay: float = 1e-5
+    weight_decay: float = 5e-4
     gradient_clip_val: float = 1.0
 
     # Learning Rate Scheduler
@@ -44,15 +45,15 @@ class ModelConfig:
     # ========== LOSS FUNCTION PARAMETERS ==========
     # Выбор функции потерь
     use_focal_loss: bool = True  # True для сложных несбалансированных случаев
-    focal_alpha: float = 1.0
+    focal_alpha: float = 0.5
     focal_gamma: float = 2.0
 
     # Weighted Loss для несбалансированных классов
-    use_weighted_loss: bool = False
+    use_weighted_loss: bool = True
     auto_class_weights: bool = True  # автоматический расчет весов
 
     # ========== EARLY STOPPING ==========
-    early_stopping_patience: int = 15  # увеличено для медицинских данных
+    early_stopping_patience: int = 12  # увеличено для медицинских данных
     early_stopping_min_delta: float = 0.001
     early_stopping_metric: str = "val_auroc"
 
@@ -77,7 +78,7 @@ class ModelConfig:
     val_list: str = "data/test/labels.csv"
 
     # Предобученная модель
-    pretrain_path: str = "model/pretrain/resnet_34_23dataset.pth"
+    pretrain_path: str = "model/pretrain/best-epoch=44-val_f1=0.8247.pth"
     use_pretrained: bool = True
 
     # Выходные директории
@@ -102,7 +103,7 @@ class ModelConfig:
 
     # ========== MODEL FINE-TUNING ==========
     # Слои для размораживания/обучения
-    new_layer_names: List[str] = field(default_factory=lambda: ["fc", "layer4"])
+    new_layer_names: List[str] = field(default_factory=lambda: ["fc", "layer4", "layer3"])
 
     # Дифференцированные learning rates
     use_differential_lr: bool = True
@@ -111,7 +112,7 @@ class ModelConfig:
 
     # ========== METRICS AND LOGGING ==========
     # Основные метрики
-    primary_metric: str = "val_f1"
+    primary_metric: str = "val_auroc"
     log_every_n_steps: int = 10
 
     # Дополнительные метрики для отслеживания
@@ -228,9 +229,14 @@ class ModelConfig:
         if self.use_weighted_loss:
             loss_type += " (Weighted)"
 
+        # Вычисляем эффективный batch size
+        effective_batch_size = self.batch_size * getattr(self, 'accumulate_grad_batches', 1)
+
         training_summary = f"""
         🎯 Конфигурация обучения:
-        • Batch size: {self.batch_size}
+        • Batch size: {self.batch_size} (физический)
+        • Accumulate grad batches: {getattr(self, 'accumulate_grad_batches', 1)}
+        • Effective batch size: {effective_batch_size}
         • Learning rate: {self.learning_rate}
         • Max epochs: {self.n_epochs}
         • Loss function: {loss_type}
@@ -245,9 +251,10 @@ class ModelConfig:
         """Проверяет конфигурацию и возвращает список предупреждений."""
         warnings = []
 
-        # Проверка размеров
-        if self.batch_size < 4:
-            warnings.append("Слишком маленький batch_size может негативно влиять на BatchNorm")
+        # Проверка размеров с учетом gradient accumulation
+        effective_batch_size = self.batch_size * getattr(self, 'accumulate_grad_batches', 1)
+        if effective_batch_size < 3:
+            warnings.append(f"Слишком маленький эффективный batch_size ({effective_batch_size}) может негативно влиять на BatchNorm")
 
         # Проверка learning rate
         if self.learning_rate > 1e-2:
