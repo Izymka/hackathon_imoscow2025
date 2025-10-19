@@ -9,19 +9,12 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     # ========== MODEL ARCHITECTURE ==========
-    model: str = "hybrid_resnet_transformer"
+    model: str = "resnet"
     model_depth: int = 34
-    resnet_shortcut: str = "B"  # B лучше для больших моделей
+    resnet_shortcut: str = "A"
 
     # Spatial Attention
-    use_spatial_attention: bool = True  # включаем для лучшего качества
-
-    # ========== TRANSFORMER PARAMETERS ==========
-    transformer_d_model: int = 512
-    transformer_nhead: int = 8
-    transformer_dim_feedforward: int = 1024
-    transformer_num_layers: int = 2
-    transformer_dropout: float = 0.1
+    use_spatial_attention: bool = False  # включение/выключение spatial attention encoder
 
     # ========== INPUT DIMENSIONS ==========
     input_W: int = 256
@@ -30,12 +23,11 @@ class ModelConfig:
 
     # ========== CLASSIFICATION PARAMETERS ==========
     n_seg_classes: int = 2  # бинарная классификация
-    num_classes: int = 2  # для гибридной модели
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 1  # Физический batch size для 256³ тензоров на 8GB VRAM
-    accumulate_grad_batches: int = 8  # Эффективный batch size = 1 * 8 = 8
+    batch_size: int = 3  # Физический batch size для 256³ тензоров на 8GB VRAM
+    accumulate_grad_batches: int = 4  # Эффективный batch size = 3 * 4 = 12
     learning_rate: float = 5e-5
     n_epochs: int = 50  #
     num_workers: int = 6
@@ -106,17 +98,11 @@ class ModelConfig:
     aug_noise_prob: float = 0.15
     aug_noise_std: float = 0.005
     aug_intensity_shift_prob: float = 0.2
-    aug_intensity_shift_offset: float = 0.03
+    aug_intensity_shift_offset: float = 0.05
     aug_contrast_prob: float = 0.2
     aug_contrast_gamma: Tuple[float, float] = (0.9, 1.1)
     aug_scale_intensity_prob: float = 0.2
     aug_scale_intensity_factors: Tuple[float, float] = (-0.05, 0.05)
-
-    aug_gaussian_blur_prob: float = 0.15
-    aug_motion_blur_prob: float = 0.1
-    aug_brightness_prob: float = 0.2
-    aug_brightness_limit: float = 0.05
-    aug_elastic_prob: float = 0.1
 
     # ========== MODEL FINE-TUNING ==========
     # Слои для размораживания/обучения
@@ -186,11 +172,10 @@ class ModelConfig:
             self.binary_classification = False
             print("⚠️  Предупреждение: binary_classification установлен в False из-за n_seg_classes != 2")
 
-        # Информация о размере входа
-        if (self.input_W, self.input_H, self.input_D) == (256, 256, 256):
-            print(f"✅ Размер входа: {self.input_W}×{self.input_H}×{self.input_D} (оптимизирован для гибридной модели)")
-        else:
+        # Предупреждение о размере входа
+        if (self.input_W, self.input_H, self.input_D) != (128, 128, 128):
             print(f"⚠️  Внимание: Размер входа изменен на {self.input_W}×{self.input_H}×{self.input_D}")
+            print("    Может потребоваться пересчет размера полносвязного слоя")
 
         # Автоматическая настройка метрик для бинарной классификации
         if self.binary_classification:
