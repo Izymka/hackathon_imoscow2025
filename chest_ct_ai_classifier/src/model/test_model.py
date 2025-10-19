@@ -12,15 +12,30 @@ import numpy as np
 from collections import OrderedDict
 
 
-def find_best_checkpoint():
-    """Поиск лучшего .ckpt"""
+def find_best_weights():
+    """Поиск лучших весов (.ckpt или .pth)"""
+    # Сначала ищем .ckpt файлы
     checkpoint_path = 'model/outputs/weights/best-epoch=17-val_f1=0.8682-val_recall=0.8615-val_specificity=0.8644--val_auroc=0.9168.ckpt'
 
     if os.path.exists(checkpoint_path):
         print(f"✅ Найден чекпоинт: {checkpoint_path}")
-        return checkpoint_path
+        return checkpoint_path, 'ckpt'
 
-    # Альтернативные пути
+    # Ищем .pth файлы
+    pth_paths = [
+        'model/outputs/weights/best_model.pth',
+        'model/outputs/weights/model.pth',
+        'model/weights/best_model.pth',
+        'weights/best_model.pth',
+        'best_model.pth'
+    ]
+
+    for pth_path in pth_paths:
+        if os.path.exists(pth_path):
+            print(f"✅ Найден .pth файл: {pth_path}")
+            return pth_path, 'pth'
+
+    # Альтернативные пути для .ckpt
     checkpoint_dir = 'model/outputs/checkpoints'
     if os.path.exists(checkpoint_dir):
         ckpt_files = [f for f in os.listdir(checkpoint_dir) if f.endswith('.ckpt')]
@@ -28,14 +43,25 @@ def find_best_checkpoint():
             ckpt_files.sort(key=lambda x: os.path.getctime(os.path.join(checkpoint_dir, x)), reverse=True)
             checkpoint_path = os.path.join(checkpoint_dir, ckpt_files[0])
             print(f"🔄 Используем найденный .ckpt: {checkpoint_path}")
-            return checkpoint_path
+            return checkpoint_path, 'ckpt'
 
-    print(f"❌ Чекпоинт .ckpt не найден: {checkpoint_path}")
-    return None
+    # Альтернативные пути для .pth
+    weights_dirs = ['model/outputs/weights', 'model/weights', 'weights', '.']
+    for weights_dir in weights_dirs:
+        if os.path.exists(weights_dir):
+            pth_files = [f for f in os.listdir(weights_dir) if f.endswith('.pth')]
+            if pth_files:
+                pth_files.sort(key=lambda x: os.path.getctime(os.path.join(weights_dir, x)), reverse=True)
+                pth_path = os.path.join(weights_dir, pth_files[0])
+                print(f"🔄 Используем найденный .pth: {pth_path}")
+                return pth_path, 'pth'
+
+    print(f"❌ Файлы весов (.ckpt или .pth) не найдены")
+    return None, None
 
 
-def load_model_checkpoint(checkpoint_path, cfg, device):
-    """Загрузка модели из .ckpt """
+def load_model_weights(weights_path, weights_type, cfg, device):
+    """Загрузка модели из .ckpt или .pth файла"""
     print("=" * 60)
     print("🔧 Создание модели для тестирования...")
 
@@ -55,24 +81,46 @@ def load_model_checkpoint(checkpoint_path, cfg, device):
     model, _ = generate_model(opt)
     print("=" * 60)
 
-    # Загрузка checkpoint
+    # Загрузка файла весов
     try:
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        print(f"📁 Загружен .ckpt файл. Доступные ключи: {list(checkpoint.keys())}")
-    except Exception as e:
-        print(f"❌ Ошибка загрузки .ckpt: {e}")
-        return None
+        if weights_type == 'pth':
+            # Для .pth файлов используем weights_only=True для безопасности
+            weights = torch.load(weights_path, map_location=device, weights_only=True)
+            print(f"📁 Загружен .pth файл. Тип данных: {type(weights)}")
 
-    # Извлечение state_dict
-    if 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-        print("🔧 Обнаружен формат PyTorch Lightning (state_dict)")
-    elif 'model_state_dict' in checkpoint:
-        state_dict = checkpoint['model_state_dict']
-        print("🔧 Обнаружен формат model_state_dict")
-    else:
-        state_dict = checkpoint
-        print("🔧 Обнаружен прямой state_dict")
+            # .pth файлы обычно содержат прямой state_dict
+            if isinstance(weights, dict):
+                if 'state_dict' in weights:
+                    state_dict = weights['state_dict']
+                    print("🔧 Обнаружен формат с ключом 'state_dict'")
+                elif 'model_state_dict' in weights:
+                    state_dict = weights['model_state_dict']
+                    print("🔧 Обнаружен формат с ключом 'model_state_dict'")
+                else:
+                    state_dict = weights
+                    print("🔧 Обнаружен прямой state_dict в .pth")
+            else:
+                print("❌ Неожиданный формат .pth файла")
+                return None
+        else:
+            # Для .ckpt файлов (PyTorch Lightning)
+            checkpoint = torch.load(weights_path, map_location=device, weights_only=False)
+            print(f"📁 Загружен .ckpt файл. Доступные ключи: {list(checkpoint.keys())}")
+
+            # Извлечение state_dict из checkpoint
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+                print("🔧 Обнаружен формат PyTorch Lightning (state_dict)")
+            elif 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+                print("🔧 Обнаружен формат model_state_dict")
+            else:
+                state_dict = checkpoint
+                print("🔧 Обнаружен прямой state_dict")
+
+    except Exception as e:
+        print(f"❌ Ошибка загрузки файла весов: {e}")
+        return None
 
     # Обработка префиксов
     new_state_dict = OrderedDict()
@@ -119,7 +167,7 @@ def load_model_checkpoint(checkpoint_path, cfg, device):
     model = model.to(device)
     model.eval()
 
-    print("✅ Модель успешно загружена из .ckpt!")
+    print(f"✅ Модель успешно загружена из {weights_type.upper()} файла!")
     return model
 
 
@@ -194,10 +242,10 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"🖥️  Используем устройство: {device}")
 
-    # Поиск checkpoint
-    checkpoint_path = find_best_checkpoint()
-    if not checkpoint_path:
-        print("❌ Не найден .ckpt файл для тестирования")
+    # Поиск файлов весов
+    weights_path, weights_type = find_best_weights()
+    if not weights_path:
+        print("❌ Не найдены файлы весов (.ckpt или .pth) для тестирования")
         return
 
     # 👉 ИСПОЛЬЗУЕМ ТОТ ЖЕ ModelConfig, что и в train.py
@@ -209,7 +257,7 @@ def main():
     print("=" * 60)
 
     # Загрузка модели с правильной конфигурацией
-    model = load_model_checkpoint(checkpoint_path, cfg, device)
+    model = load_model_weights(weights_path, weights_type, cfg, device)
     if model is None:
         return
 
