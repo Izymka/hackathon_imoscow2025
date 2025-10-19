@@ -34,10 +34,10 @@ class ModelConfig:
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 1  # Физический batch size для 256³ тензоров с трансформером на 8GB VRAM
+    batch_size: int = 1  # Физический batch size для 256³ тензоров на 8GB VRAM
     accumulate_grad_batches: int = 8  # Эффективный batch size = 1 * 8 = 8
-    learning_rate: float = 3e-5  # Немного ниже для трансформера
-    n_epochs: int = 75  #
+    learning_rate: float = 5e-5
+    n_epochs: int = 50  #
     num_workers: int = 6
     optimizer: str = "adamw"
     momentum: float = 0.9
@@ -49,22 +49,22 @@ class ModelConfig:
 
     # Learning Rate Scheduler
     lr_scheduler: str = "plateau"  # "plateau", "cosine", "none"
-    lr_scheduler_patience: int = 10
+    lr_scheduler_patience: int = 7
     lr_scheduler_factor: float = 0.3
     lr_scheduler_min_lr: float = 1e-7
 
     # ========== LOSS FUNCTION PARAMETERS ==========
     # Выбор функции потерь
     use_focal_loss: bool = True  # True для сложных несбалансированных случаев
-    focal_alpha: float = 0.7
-    focal_gamma: float = 3.0
+    focal_alpha: float = 0.5
+    focal_gamma: float = 2.0
 
     # Weighted Loss для несбалансированных классов
     use_weighted_loss: bool = True
     auto_class_weights: bool = True  # автоматический расчет весов
 
     # ========== EARLY STOPPING ==========
-    early_stopping_patience: int = 15  # увеличено для медицинских данных
+    early_stopping_patience: int = 12  # увеличено для медицинских данных
     early_stopping_min_delta: float = 0.001
     early_stopping_metric: str = "val_auroc"
 
@@ -89,7 +89,7 @@ class ModelConfig:
     val_list: str = "data/test/labels.csv"
 
     # Предобученная модель
-    pretrain_path: str = "model/pretrain/best-epoch=17-val_f1=0.8400.pth"
+    pretrain_path: str = "model/pretrain/23-val_f1=0.7801-val_recall=0.7308-val_specificity=0.8045--val_auroc=0.8515.pth"
     use_pretrained: bool = True
 
     # Выходные директории
@@ -106,11 +106,17 @@ class ModelConfig:
     aug_noise_prob: float = 0.15
     aug_noise_std: float = 0.005
     aug_intensity_shift_prob: float = 0.2
-    aug_intensity_shift_offset: float = 0.05
+    aug_intensity_shift_offset: float = 0.03
     aug_contrast_prob: float = 0.2
     aug_contrast_gamma: Tuple[float, float] = (0.9, 1.1)
     aug_scale_intensity_prob: float = 0.2
     aug_scale_intensity_factors: Tuple[float, float] = (-0.05, 0.05)
+
+    aug_gaussian_blur_prob: float = 0.15
+    aug_motion_blur_prob: float = 0.1
+    aug_brightness_prob: float = 0.2
+    aug_brightness_limit: float = 0.05
+    aug_elastic_prob: float = 0.1
 
     # ========== MODEL FINE-TUNING ==========
     # Слои для размораживания/обучения
