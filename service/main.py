@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Глобальная переменная для модели
-ml_model = None
+ml_model: Optional[MedicalModelInference] = None
 
 
 def convert_numpy_types(obj: Any) -> Any:
@@ -229,7 +229,13 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     # Предсказание
     logger.info("Predict")
     prediction = ml_model.predict(tensor)
-    # explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
+    explanation = ml_model.explain_prediction(
+        tensor,
+        method="saliency",
+        visualize=False,
+        target_class=prediction["prediction"],
+        save_png=True
+    )
     del tensor
     gc.collect()
 
