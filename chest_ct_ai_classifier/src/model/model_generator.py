@@ -245,7 +245,6 @@ def generate_model(opt):
 
     # Для гибридной модели возвращаем все параметры для обучения с нуля
     if opt.model == 'hybrid_resnet_transformer':
-        print("🔥 Гибридная модель будет обучаться с нуля (все параметры активны)")
         return model, model.parameters()
 
     return model, model.parameters()
