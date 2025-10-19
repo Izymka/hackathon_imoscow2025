@@ -126,6 +126,33 @@ curl --location 'http://localhost:8010/process' \
 - Поле `zip_path` должно указывать на путь внутри контейнера: `/mnt/storage/…` (это путь к смонтированной папке).
 - Поддерживаются ZIP с одной серией или с набором DICOM‑файлов; если внутри архива несколько папок, сервис определит корректный корень исследования автоматически.
 
+### Параметры визуализации (опционально)
+Сервис может сохранять PNG‑визуализацию объяснимости предсказания рядом с XLSX‑отчётом.
+
+- SAVE_EXPLANATION_IMAGE: true/false — включает сохранение PNG визуализации исследования.
+- SAVE_IMAGE_FOR_NORMA: true/false — если включено, PNG создаётся и для случаев, предсказанных как «норма» (по умолчанию true). Если выключено — PNG сохраняется только для «патология».
+
+Как задать параметры при запуске контейнера:
+
+```
+# CPU‑вариант
+docker run --rm -p 8010:8000 \
+  -e SAVE_EXPLANATION_IMAGE=true \
+  -e SAVE_IMAGE_FOR_NORMA=true \
+  -v ./ml-storage:/mnt/storage \
+  --name ct-ml-docker ghcr.io/izymka/hackathon_imoscow2025:latest
+
+# GPU‑вариант (при наличии GPU)
+docker run --rm --gpus all -p 8010:8000 \
+  -e SAVE_EXPLANATION_IMAGE=true \
+  -e SAVE_IMAGE_FOR_NORMA=true \
+  -v ./ml-storage:/mnt/storage \
+  --name ct-ml-docker ghcr.io/izymka/hackathon_imoscow2025:latest
+```
+
+Где искать PNG:
+- Файл визуализации с расширением `.png` будет сохранён в той же смонтированной директории рядом с результатами исследования (`.xlsx`).
+
 
 ## 5. Структура проекта и назначение основных файлов
 Корень проекта:
