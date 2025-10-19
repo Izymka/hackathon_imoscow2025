@@ -9,12 +9,19 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     # ========== MODEL ARCHITECTURE ==========
-    model: str = "resnet"
+    model: str = "hybrid_resnet_transformer"
     model_depth: int = 34
-    resnet_shortcut: str = "A"
+    resnet_shortcut: str = "B"  # B лучше для больших моделей
 
     # Spatial Attention
-    use_spatial_attention: bool = False  # включение/выключение spatial attention encoder
+    use_spatial_attention: bool = True  # включаем для лучшего качества
+
+    # ========== TRANSFORMER PARAMETERS ==========
+    transformer_d_model: int = 512
+    transformer_nhead: int = 8
+    transformer_dim_feedforward: int = 1024
+    transformer_num_layers: int = 2
+    transformer_dropout: float = 0.1
 
     # ========== INPUT DIMENSIONS ==========
     input_W: int = 256
@@ -23,12 +30,13 @@ class ModelConfig:
 
     # ========== CLASSIFICATION PARAMETERS ==========
     n_seg_classes: int = 2  # бинарная классификация
+    num_classes: int = 2  # для гибридной модели
     binary_classification: bool = True
 
     # ========== TRAINING HYPERPARAMETERS ==========
-    batch_size: int = 3  # Физический batch size для 256³ тензоров на 8GB VRAM
-    accumulate_grad_batches: int = 4  # Эффективный batch size = 3 * 4 = 12
-    learning_rate: float = 5e-5
+    batch_size: int = 1  # Физический batch size для 256³ тензоров с трансформером на 8GB VRAM
+    accumulate_grad_batches: int = 8  # Эффективный batch size = 1 * 8 = 8
+    learning_rate: float = 3e-5  # Немного ниже для трансформера
     n_epochs: int = 75  #
     num_workers: int = 6
     optimizer: str = "adamw"
@@ -172,10 +180,11 @@ class ModelConfig:
             self.binary_classification = False
             print("⚠️  Предупреждение: binary_classification установлен в False из-за n_seg_classes != 2")
 
-        # Предупреждение о размере входа
-        if (self.input_W, self.input_H, self.input_D) != (128, 128, 128):
+        # Информация о размере входа
+        if (self.input_W, self.input_H, self.input_D) == (256, 256, 256):
+            print(f"✅ Размер входа: {self.input_W}×{self.input_H}×{self.input_D} (оптимизирован для гибридной модели)")
+        else:
             print(f"⚠️  Внимание: Размер входа изменен на {self.input_W}×{self.input_H}×{self.input_D}")
-            print("    Может потребоваться пересчет размера полносвязного слоя")
 
         # Автоматическая настройка метрик для бинарной классификации
         if self.binary_classification:

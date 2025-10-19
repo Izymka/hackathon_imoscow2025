@@ -134,7 +134,7 @@ def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
 
 
 def generate_model(opt):
-    assert opt.model in ['resnet']
+    assert opt.model in ['resnet', 'hybrid_resnet_transformer']
 
     if opt.model == 'resnet':
         assert opt.model_depth in [10, 18, 34, 50, 101, 152, 200]
@@ -156,8 +156,34 @@ def generate_model(opt):
             sample_input_D=opt.input_D,
             shortcut_type=opt.resnet_shortcut,
             no_cuda=opt.no_cuda,
-            num_seg_classes=opt.n_seg_classes
+            num_seg_classes=opt.n_seg_classes,
+            use_cbam=getattr(opt, 'use_cbam', False)
         )
+
+    elif opt.model == 'hybrid_resnet_transformer':
+        print(f"🤖 Создание гибридной ResNet-Transformer модели (depth={opt.model_depth})")
+
+        # Создание гибридной модели
+        model = resnet.HybridResNetTransformer(
+            sample_input_D=opt.input_D,
+            sample_input_H=opt.input_H,
+            sample_input_W=opt.input_W,
+            num_classes=opt.n_seg_classes,
+            transformer_d_model=getattr(opt, 'transformer_d_model', 512),
+            transformer_nhead=getattr(opt, 'transformer_nhead', 8),
+            transformer_dim_feedforward=getattr(opt, 'transformer_dim_feedforward', 1024),
+            transformer_num_layers=getattr(opt, 'transformer_num_layers', 2),
+            transformer_dropout=getattr(opt, 'transformer_dropout', 0.1),
+            use_spatial_attention=getattr(opt, 'use_spatial_attention', True),
+            use_cbam=getattr(opt, 'use_cbam', False)
+        )
+
+        print(f"✅ Гибридная модель создана:")
+        print(f"   ResNet backbone: ResNet{opt.model_depth}")
+        print(f"   Spatial attention: {getattr(opt, 'use_spatial_attention', True)}")
+        print(f"   CBAM attention: {getattr(opt, 'use_cbam', False)}")
+        print(f"   Transformer layers: {getattr(opt, 'transformer_num_layers', 2)}")
+        print(f"   Transformer heads: {getattr(opt, 'transformer_nhead', 8)}")
 
     # Настройка для GPU/CPU
     if not opt.no_cuda:
@@ -174,8 +200,8 @@ def generate_model(opt):
     else:
         net_dict = model.state_dict()
 
-    # Загрузка предобученной модели
-    if opt.phase != 'test' and opt.pretrain_path:
+        # Загрузка предобученной модели (только для ResNet, не для гибридной модели)
+    if opt.phase != 'test' and opt.pretrain_path and opt.model == 'resnet':
         print('📥 Загрузка предобученной модели {}'.format(opt.pretrain_path))
 
         # Загрузка с совместимостью CPU/GPU
@@ -218,5 +244,10 @@ def generate_model(opt):
                       'new_parameters': new_parameters}
 
         return model, parameters
+
+    # Для гибридной модели возвращаем все параметры для обучения с нуля
+    if opt.model == 'hybrid_resnet_transformer':
+        print("🔥 Гибридная модель будет обучаться с нуля (все параметры активны)")
+        return model, model.parameters()
 
     return model, model.parameters()
