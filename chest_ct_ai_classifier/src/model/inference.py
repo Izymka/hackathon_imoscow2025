@@ -21,6 +21,10 @@ from .lightning_module import MedicalClassificationModel
 try:
     from captum.attr import IntegratedGradients, Saliency, LayerGradCam, LayerAttribution
     from captum.attr import visualization as viz
+
+    # Устанавливаем non-GUI backend для matplotlib (для macOS совместимости)
+    import matplotlib
+    matplotlib.use('Agg')  # Non-GUI backend
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
 
@@ -349,7 +353,8 @@ class MedicalModelInference:
 
     def explain_prediction(self, input_tensor: torch.Tensor, target_class: Optional[int] = 1,
                            method: str = "saliency", visualize: bool = True,
-                           threshold: float = 0.1, alpha: float = 0.7, save_png: bool = False):
+                           threshold: float = 0.1, alpha: float = 0.7, save_png: bool = True,
+                           output_path: Optional[str] = None):
         """
         Объясняет предсказание с помощью Captum.
 
@@ -357,12 +362,14 @@ class MedicalModelInference:
             input_tensor: тензор формы (1, 1, 256, 256, 256)
             target_class: класс для объяснения (если None, используется предсказанный)
             method: метод объяснения ('integrated_gradients', 'saliency')
-            visualize: показывать ли визуализацию
+            visualize: сохранять ли визуализацию (по умолчанию True для macOS совместимости)
             threshold: порог для маскирования слабых атрибутов (0-1)
             alpha: прозрачность наложения тепловой карты
+            save_png: сохранять ли PNG файл (по умолчанию True)
+            output_path: путь для сохранения изображения (если None, используется автогенерация)
 
         Returns:
-            attributions: объяснение (тензор с тем же размером, что и вход)
+            dict: {'attributions': тензор атрибутов, 'image_path': путь к сохраненному изображению}
         """
         if not CAPTUM_AVAILABLE:
             raise ImportError("Captum не установлен. Установите: pip install captum")
@@ -399,25 +406,21 @@ class MedicalModelInference:
             else:
                 raise ValueError(f"Неподдерживаемый метод: {method}")
 
-            if visualize:
-                self._visualize_3d_attributions_enhanced(
-                    attributions, original_tensor,
-                    title=f"Attributions ({method})",
-                    threshold=threshold,
-                    alpha=alpha
-                )
+            result = {'attributions': attributions}
 
-            if save_png:
-                saved_image = self._visualize_3d_attributions_enhanced(
+            if visualize or save_png:
+                saved_image_path = self._visualize_3d_attributions_enhanced(
                     attributions, original_tensor,
                     title=f"Attributions ({method})",
                     threshold=threshold,
                     alpha=alpha,
-                    return_png=True
+                    save_to_file=True,
+                    output_path=output_path
                 )
-                attributions["image"] = saved_image
+                result['image_path'] = saved_image_path
+                print(f"✅ Визуализация сохранена: {saved_image_path}")
 
-            return attributions
+            return result
 
         except RuntimeError as e:
             if "out of memory" in str(e):
@@ -431,8 +434,23 @@ class MedicalModelInference:
                 raise e
 
     def _visualize_3d_attributions_enhanced(self, attributions, original_tensor,
-                                            title="Attributions", threshold=0.1, alpha=0.7, return_png=False):
-        """Улучшенная визуализация атрибутов с маскированием нулей и наложением."""
+                                            title="Attributions", threshold=0.1, alpha=0.7, 
+                                            save_to_file=False, output_path=None):
+        """
+        Улучшенная визуализация атрибутов с маскированием нулей и наложением.
+
+        Args:
+            attributions: тензор атрибутов
+            original_tensor: исходный тензор
+            title: заголовок визуализации
+            threshold: порог для маскирования
+            alpha: прозрачность наложения
+            save_to_file: сохранять ли в файл (по умолчанию False для обратной совместимости)
+            output_path: путь для сохранения (если None, генерируется автоматически)
+
+        Returns:
+            str: путь к сохраненному файлу (если save_to_file=True), иначе None
+        """
         attr_np = attributions.squeeze().detach().cpu().numpy()
         original_np = original_tensor.squeeze().detach().cpu().numpy()
 
@@ -492,17 +510,32 @@ class MedicalModelInference:
 
         plt.suptitle(f"{title}\n(показаны только атрибуты > {threshold:.1%} от максимума)", fontsize=14)
         plt.tight_layout()
-        if return_png:
-            filename = f"{int(time.time())}_{hash(str(time.time())) % 1000:03d}.png"
-            plt.savefig(filename)
-            return filename
-        plt.show()
 
         # Дополнительная информация
         total_voxels = np.prod(attr_np.shape)
         significant_voxels = np.sum(mask)
         print(f"📊 Значимые воксели: {significant_voxels}/{total_voxels} ({significant_voxels / total_voxels:.1%})")
         print(f"📈 Максимальный атрибут: {attr_np.max():.4f}, Минимальный: {attr_np.min():.4f}")
+
+        if save_to_file:
+            if output_path is None:
+                # Генерируем уникальное имя файла
+                output_path = f"attributions_{int(time.time())}_{hash(str(time.time())) % 1000:03d}.png"
+
+            plt.savefig(output_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)  # Закрываем figure для освобождения памяти
+            return output_path
+        else:
+            # Для обратной совместимости - показываем только если явно не требуется сохранение
+            # Внимание: на macOS это может вызвать ошибку!
+            try:
+                plt.show()
+            except Exception as e:
+                print(f"⚠️ Не удалось показать изображение: {e}")
+                print("💡 Используйте save_to_file=True для сохранения в файл")
+            finally:
+                plt.close(fig)
+            return None
 
     def _visualize_3d_attributions(self, attributions, title="Attributions"):
         """Стандартная визуализация атрибутов по осям (для обратной совместимости)."""
@@ -532,9 +565,18 @@ class MedicalModelInference:
         plt.show()
 
     def predict_with_explanation(self, input_tensor: torch.Tensor, method: str = "saliency",
-                                 threshold: float = 0.1, alpha: float = 0.7):
+                                 threshold: float = 0.1, alpha: float = 0.7, 
+                                 save_png: bool = True, output_path: Optional[str] = None):
         """
         Выполняет предсказание и объяснение за раз.
+
+        Args:
+            input_tensor: входной тензор
+            method: метод объяснения
+            threshold: порог для маскирования
+            alpha: прозрачность
+            save_png: сохранять ли изображение
+            output_path: путь для сохранения
 
         Returns:
             dict: {'prediction': ..., 'explanation': ...}
@@ -545,7 +587,9 @@ class MedicalModelInference:
             target_class=prediction['prediction'],
             method=method,
             threshold=threshold,
-            alpha=alpha
+            alpha=alpha,
+            save_png=save_png,
+            output_path=output_path
         )
         return {
             'prediction': prediction,

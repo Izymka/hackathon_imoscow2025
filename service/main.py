@@ -32,8 +32,12 @@ from chest_ct_ai_classifier.src.utils.dicom_parser import parse_dicom, DicomSumm
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Опциональное сохранение и возврат пути к изображению объяснения
+save_expl_image = os.getenv("SAVE_EXPLANATION_IMAGE", "False").lower() in ("1", "true", "yes", "y")
+save_image_for_norma = os.getenv("SAVE_IMAGE_FOR_NORMA", "True").lower() in ("1", "true", "yes", "y")
+
 # Глобальная переменная для модели
-ml_model = None
+ml_model: Optional[MedicalModelInference] = None
 
 
 def convert_numpy_types(obj: Any) -> Any:
@@ -152,6 +156,7 @@ class PredictionResponse(BaseModel):
     processing_time: float
     metadata: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
+    explanation_image: Optional[str] = None
 
 
 class ProcessRequest(BaseModel):
@@ -229,7 +234,24 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
     # Предсказание
     logger.info("Predict")
     prediction = ml_model.predict(tensor)
-    # explanation = ml_model.explain_prediction(tensor, method="saliency", visualize=False, target_class=prediction["prediction"])
+
+    explanation_image = None
+    try:
+        if save_expl_image and (save_image_for_norma == True or prediction["prediction"] == 1):
+            explanation = ml_model.explain_prediction(
+                tensor,
+                method="saliency",
+                visualize=False,
+                target_class=prediction["prediction"],
+                save_png=save_expl_image
+            )
+            if explanation and isinstance(explanation, dict):
+                image_path = explanation.get("image_path")
+                if image_path:
+                    explanation_image = str(image_path)
+    except Exception as expl_err:
+        logger.warning(f"Explain prediction failed or disabled: {expl_err}")
+
     del tensor
     gc.collect()
 
@@ -246,7 +268,8 @@ def process_predict(dicom_dir, tensor_output_dir, background_tasks: BackgroundTa
         patient_id=patient_id,
         prediction=prediction,
         processing_time=processing_time,
-        message="Предсказание выполнено успешно"
+        message="Предсказание выполнено успешно",
+        explanation_image=explanation_image
     )
 
 
@@ -322,7 +345,6 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 random_suffix = np.random.randint(1000, 9999)
                 result_xlsx_path = zip_path.with_name(f"{timestamp}_{random_suffix}.xlsx")
-
                 # Подготовка данных для сохранения
                 series_uids = None
                 try:
@@ -355,6 +377,15 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 logger.error(f"Не удалось сохранить результат в XLSX: {save_err}")
                 xlsx_result_path = None
 
+            result_image_path = None
+            try:
+                if predict.explanation_image:
+                    result_image_path = result_xlsx_path.with_suffix(".png")
+                    shutil.move(predict.explanation_image, result_image_path)
+            except Exception as expl_err:
+                logger.error(f"Не удалось переместить изображение с объяснением: {expl_err}")
+
+
             # Формируем payload ответа и приводим к сериализуемым типам
             result_payload = {
                 "ok": True,
@@ -367,7 +398,8 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                     "prediction": {
                         "result": predict.prediction["prediction"],
                         "confidence": predict.prediction["confidence"],
-                    }
+                    },
+                    "explanation_image": result_image_path.name if result_image_path else None,
                 },
                 "dicom": dicom_summary,
             }
