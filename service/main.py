@@ -399,7 +399,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                         "result": predict.prediction["prediction"],
                         "confidence": predict.prediction["confidence"],
                     },
-                    "explanation_image": result_image_path.name if result_image_path else None,
+                    "explanation_image": str(result_image_path) if result_image_path else None,
                 },
                 "dicom": dicom_summary,
             }
