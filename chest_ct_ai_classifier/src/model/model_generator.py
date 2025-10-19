@@ -174,13 +174,11 @@ def generate_model(opt):
             transformer_dim_feedforward=getattr(opt, 'transformer_dim_feedforward', 1024),
             transformer_num_layers=getattr(opt, 'transformer_num_layers', 2),
             transformer_dropout=getattr(opt, 'transformer_dropout', 0.1),
-            use_spatial_attention=getattr(opt, 'use_spatial_attention', True),
             use_cbam=getattr(opt, 'use_cbam', False)
         )
 
         print(f"✅ Гибридная модель создана:")
         print(f"   ResNet backbone: ResNet{opt.model_depth}")
-        print(f"   Spatial attention: {getattr(opt, 'use_spatial_attention', True)}")
         print(f"   CBAM attention: {getattr(opt, 'use_cbam', False)}")
         print(f"   Transformer layers: {getattr(opt, 'transformer_num_layers', 2)}")
         print(f"   Transformer heads: {getattr(opt, 'transformer_nhead', 8)}")
