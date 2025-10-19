@@ -183,7 +183,8 @@ def parse_dicom(dicom_dir: str|Path, header_only: bool = False) -> DicomSummary 
         raise ValueError(f"Path is not a directory: {dicom_dir}")
 
     # 1) Collect readable DICOM files
-    if root.is_file() and root.suffix.lower() in ['.dcm', '.dicom']:
+    supported_dicom_files = ['.dcm', '.dicom', '.nii']
+    if root.is_file() and root.suffix.lower() in supported_dicom_files:
         dicom_files = [root]
     else:
         dicom_files: List[Path] = []
@@ -191,7 +192,7 @@ def parse_dicom(dicom_dir: str|Path, header_only: bool = False) -> DicomSummary 
     for dirpath, _, filenames in os.walk(root):
         for name in filenames:
             fp = Path(dirpath) / name
-            if name.lower().endswith('.dcm') or name.lower().endswith('.dicom'):
+            if fp.suffix.lower() in supported_dicom_files:
                 try:
                     pydicom.dcmread(str(fp), stop_before_pixels=True, force=True)
                     dicom_files.append(fp)

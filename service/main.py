@@ -82,7 +82,7 @@ def convert_numpy_types(obj: Any) -> Any:
 # Путь к скрипту подготовки данных из переменной окружения
 PREPARE_CT_SCRIPT = os.getenv("PREPARE_CT_SCRIPT", "chest_ct_ai_classifier/src/scripts/prepare_ct_medicalnet_format.py")
 VALID_TYPES = os.getenv("VALID_TYPES", "CHEST,CHEST_TO_PELVIS").split(",")
-
+WEIGHTS_URL = os.getenv("WEIGHTS_URL", "https://ct-scan-api.prowebcraft.ru/weights.pth")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -90,7 +90,6 @@ async def lifespan(app: FastAPI):
     global ml_model
     try:
         # Загрузка весов модели
-        weights_url = "https://ct-scan-api.prowebcraft.ru/weights.pth"
         model_dir = Path("./model")
         model_path = model_dir / "weights.pth"
 
@@ -111,7 +110,7 @@ async def lifespan(app: FastAPI):
                         if tmp_path.exists():
                             tmp_path.unlink(missing_ok=True)
                         start_time = time.time()
-                        urllib.request.urlretrieve(weights_url, str(tmp_path))
+                        urllib.request.urlretrieve(WEIGHTS_URL, str(tmp_path))
                         # Атомарно заменяем временный файл на целевой
                         os.replace(tmp_path, model_path)
                         logger.info(f"✅ Веса успешно загружены за {time.time() - start_time:.2f} сек")
@@ -333,6 +332,7 @@ def process(req: ProcessRequest, background_tasks: BackgroundTasks) -> Dict[str,
                 raise Exception("Study UID not found")
 
             predict = process_predict(dicom_root, tensors_dir, background_tasks, tmpdir)
+            logger.info(f"Prediction result: {predict.prediction['prediction']}, confidence: {predict.prediction['confidence']}")
 
             # Convert to plain dict for JSON response
             dicom_summary = summary.to_dict() if hasattr(summary, 'to_dict') else dict(summary)
