@@ -89,7 +89,7 @@ class ModelConfig:
     val_list: str = "data/test/labels.csv"
 
     # Предобученная модель
-    pretrain_path: str = "model/pretrain/23-val_f1=0.7801-val_recall=0.7308-val_specificity=0.8045--val_auroc=0.8515.pth"
+    pretrain_path: str = "model/pretrain/resnet_34_23dataset.pth"
     use_pretrained: bool = True
 
     # Выходные директории

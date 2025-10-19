@@ -8,6 +8,91 @@ except ImportError:
     # Если относительный импорт не работает, используем абсолютный
     from models import resnet
 
+def adapt_pretrained_weights_for_hybrid(pretrain_dict, model_type='hybrid', use_dataparallel=True):
+    """
+    Адаптирует ключи предобученных весов ResNet для гибридной модели.
+    Добавляет префикс 'module.backbone.' к ключам ResNet компонентов.
+    """
+    if model_type != 'hybrid':
+        return pretrain_dict
+
+    # Показываем примеры ключей для отладки
+    sample_keys = list(pretrain_dict.keys())[:5]
+    print(f"  Примеры ключей в предобученной модели: {sample_keys}")
+
+    adapted_dict = {}
+    resnet_layers = ['conv1', 'bn1', 'relu', 'maxpool', 'layer1', 'layer2', 'layer3', 'layer4', 'avgpool']
+
+    # Ключи которые НЕ нужно переносить (специфичны для классификации/сегментации)
+    skip_layers = ['fc', 'conv_seg']
+
+    converted_count = 0
+    for key, value in pretrain_dict.items():
+        # Пропускаем ключи, которые не нужны
+        if any(key.startswith(skip_key) for skip_key in skip_layers):
+            continue
+
+        # Проверяем, относится ли ключ к ResNet компонентам
+        # Проверяем как точное совпадение, так и начало строки
+        is_resnet_layer = False
+        for layer in resnet_layers:
+            if key == layer or key.startswith(layer + '.') or key.startswith(layer + '_'):
+                is_resnet_layer = True
+                break
+
+        if is_resnet_layer:
+            # Добавляем префикс module.backbone для DataParallel
+            if use_dataparallel:
+                new_key = f'module.backbone.{key}'
+            else:
+                new_key = f'backbone.{key}'
+            adapted_dict[new_key] = value
+            converted_count += 1
+            if converted_count <= 5:  # Показываем только первые 5
+                print(f"  {key} → {new_key}")
+
+    if converted_count > 5:
+        print(f"  ... и еще {converted_count - 5} слоев")
+    print(f"  Всего адаптировано: {converted_count} слоев")
+
+    # Если ничего не адаптировано, показываем все уникальные префиксы
+    if converted_count == 0:
+        prefixes = set()
+        for key in pretrain_dict.keys():
+            prefix = key.split('.')[0] if '.' in key else key
+            prefixes.add(prefix)
+        print(f"  ⚠️ Найденные префиксы в чекпоинте: {sorted(prefixes)}")
+
+    return adapted_dict
+
+
+def freeze_backbone_blocks(model, blocks_to_freeze=['conv1', 'bn1', 'layer1', 'layer2']):
+    """
+    Замораживает указанные блоки в backbone гибридной модели.
+    По умолчанию замораживает первые 2 блока ResNet (conv1, bn1, layer1, layer2).
+    Работает с DataParallel обертками.
+    """
+    # Проверяем, обернута ли модель в DataParallel
+    actual_model = model.module if hasattr(model, 'module') else model
+
+    if not hasattr(actual_model, 'backbone'):
+        print("⚠️ Модель не имеет атрибута backbone, заморозка пропущена")
+        return
+
+    frozen_params = 0
+    for block_name in blocks_to_freeze:
+        if hasattr(actual_model.backbone, block_name):
+            block = getattr(actual_model.backbone, block_name)
+            for param in block.parameters():
+                param.requires_grad = False
+                frozen_params += param.numel()
+            print(f"  ❄️ {block_name} заморожен")
+        else:
+            print(f"  ⚠️ {block_name} не найден в backbone")
+
+    print(f"  ❄️ Всего заморожено параметров: {frozen_params:,}")
+
+
 
 def adapt_model_for_input_size(model, input_size, model_depth, n_seg_classes):
     """
@@ -198,8 +283,8 @@ def generate_model(opt):
     else:
         net_dict = model.state_dict()
 
-        # Загрузка предобученной модели (только для ResNet, не для гибридной модели)
-    if opt.phase != 'test' and opt.pretrain_path and opt.model == 'resnet':
+    # Загрузка предобученной модели
+    if opt.phase != 'test' and opt.pretrain_path and opt.model in ['resnet', 'hybrid_resnet_transformer']:
         print('📥 Загрузка предобученной модели {}'.format(opt.pretrain_path))
 
         # Загрузка с совместимостью CPU/GPU
@@ -208,15 +293,79 @@ def generate_model(opt):
         else:
             pretrain = torch.load(opt.pretrain_path, weights_only=True)
 
-        pretrain_dict = {k: v for k, v in pretrain['state_dict'].items() if k in net_dict.keys()}
-        net_dict.update(pretrain_dict)
-        model.load_state_dict(net_dict, strict=False)
+        # Извлекаем state_dict из чекпоинта
+        if 'state_dict' in pretrain:
+            pretrain_state = pretrain['state_dict']
+        else:
+            pretrain_state = pretrain
+
+        print(f"  Всего ключей в чекпоинте: {len(pretrain_state)}")
+
+        # Удаляем все возможные префиксы (от Lightning и DataParallel)
+        pretrain_dict = {}
+        for k, v in pretrain_state.items():
+            clean_key = k
+
+            # Убираем префиксы в порядке: model.module. -> model. -> module.
+            if clean_key.startswith('model.module.'):
+                clean_key = clean_key[13:]  # убираем 'model.module.'
+            elif clean_key.startswith('model.'):
+                clean_key = clean_key[6:]  # убираем 'model.'
+            elif clean_key.startswith('module.'):
+                clean_key = clean_key[7:]  # убираем 'module.'
+
+            # Пропускаем не-модельные ключи
+            if clean_key in ['class_weights', 'loss_fn'] or clean_key.startswith('loss_fn.'):
+                continue
+
+            pretrain_dict[clean_key] = v
+
+        print(f"  Ключей после очистки префиксов: {len(pretrain_dict)}")
+        # Показываем примеры очищенных ключей
+        sample_clean_keys = list(pretrain_dict.keys())[:5]
+        print(f"  Примеры очищенных ключей: {sample_clean_keys}")
+
+        # Для гибридной модели адаптируем ключи
+        if opt.model == 'hybrid_resnet_transformer':
+            print("🔄 Адаптация ключей предобученных весов для гибридной модели:")
+            # Определяем, используется ли DataParallel
+            use_dp = len(opt.gpu_id) > 1 or (hasattr(model, 'module'))
+            pretrain_dict = adapt_pretrained_weights_for_hybrid(
+                pretrain_dict, 
+                model_type='hybrid',
+                use_dataparallel=use_dp
+            )
+
+        # Загружаем веса (strict=False чтобы игнорировать несовпадающие слои)
+        # Фильтруем только совместимые ключи
+        compatible_dict = {k: v for k, v in pretrain_dict.items() if k in net_dict.keys()}
+
+        incompatible_keys = set(pretrain_dict.keys()) - set(compatible_dict.keys())
+        if incompatible_keys:
+            print(f"⚠️ Несовместимые ключи (будут пропущены): {len(incompatible_keys)}")
+            # Показываем несколько примеров для отладки
+            examples = list(incompatible_keys)[:3]
+            if examples:
+                print(f"   Примеры: {examples}")
+
+        print(f"✅ Загружено предобученных весов: {len(compatible_dict)}/{len(net_dict)} слоев")
+
+        if len(compatible_dict) > 0:
+            net_dict.update(compatible_dict)
+            model.load_state_dict(net_dict, strict=False)
+        else:
+            print("⚠️ ВНИМАНИЕ: Ни один слой не был загружен из предобученной модели!")
+
+        # Для гибридной модели замораживаем первые 2 блока ResNet
+        if opt.model == 'hybrid_resnet_transformer':
+            print("❄️ Заморозка первых 2 блоков ResNet в backbone:")
+            freeze_backbone_blocks(model, blocks_to_freeze=['conv1', 'bn1', 'layer1', 'layer2'])
 
         # Проверка необходимости адаптации размеров
         current_input_size = (opt.input_W, opt.input_H, opt.input_D)
         pretrained_input_size = (128, 128, 128)  # размер предобученной модели
 
-        if current_input_size != pretrained_input_size:
+        if current_input_size != pretrained_input_size and opt.model == 'resnet':
             print(f"⚠️ Обнаружено изменение размера входа: {pretrained_input_size} → {current_input_size}")
             print("🔧 Выполняется адаптация модели...")
 
@@ -228,23 +377,59 @@ def generate_model(opt):
             print("✅ Адаптация модели завершена!")
             return model, parameters
 
-        # Стандартный путь без изменения размеров
-        new_parameters = []
-        for pname, p in model.named_parameters():
-            for layer_name in opt.new_layer_names:
-                if pname.find(layer_name) >= 0:
-                    new_parameters.append(p)
-                    break
+        # Формирование обучаемых параметров
+        if opt.model == 'hybrid_resnet_transformer':
+            # Для гибридной модели обучаем:
+            # - layer3, layer4 в backbone
+            # - все Transformer слои
+            # - классификатор
 
-        new_parameters_id = list(map(id, new_parameters))
-        base_parameters = list(filter(lambda p: id(p) not in new_parameters_id, model.parameters()))
-        parameters = {'base_parameters': base_parameters,
-                      'new_parameters': new_parameters}
+            trainable_params = []
 
-        return model, parameters
+            # Backbone layer3 и layer4
+            if hasattr(model, 'module'):
+                # DataParallel случай
+                trainable_params.extend(list(model.module.backbone.layer3.parameters()))
+                trainable_params.extend(list(model.module.backbone.layer4.parameters()))
+                # Transformer layers
+                trainable_params.extend(list(model.module.transformer_layers.parameters()))
+                # Positional encoding
+                trainable_params.append(model.module.pos_encoding)
+                # Classifier
+                trainable_params.extend(list(model.module.classifier.parameters()))
+            else:
+                trainable_params.extend(list(model.backbone.layer3.parameters()))
+                trainable_params.extend(list(model.backbone.layer4.parameters()))
+                trainable_params.extend(list(model.transformer_layers.parameters()))
+                trainable_params.append(model.pos_encoding)
+                trainable_params.extend(list(model.classifier.parameters()))
 
-    # Для гибридной модели возвращаем все параметры для обучения с нуля
-    if opt.model == 'hybrid_resnet_transformer':
-        return model, model.parameters()
+            # Убеждаемся что все в trainable_params имеют requires_grad=True
+            for p in trainable_params:
+                p.requires_grad = True
+
+            print(f"✅ Обучаемых параметров в гибридной модели: {sum(p.numel() for p in trainable_params):,}")
+
+            parameters = {
+                'base_parameters': trainable_params,  # используем одинаковый LR для всех
+                'new_parameters': []
+            }
+
+            return model, parameters
+        else:
+            # Стандартный путь для обычного ResNet
+            new_parameters = []
+            for pname, p in model.named_parameters():
+                for layer_name in opt.new_layer_names:
+                    if pname.find(layer_name) >= 0:
+                        new_parameters.append(p)
+                        break
+
+            new_parameters_id = list(map(id, new_parameters))
+            base_parameters = list(filter(lambda p: id(p) not in new_parameters_id, model.parameters()))
+            parameters = {'base_parameters': base_parameters,
+                          'new_parameters': new_parameters}
+
+            return model, parameters
 
     return model, model.parameters()
