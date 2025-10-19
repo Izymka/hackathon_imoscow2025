@@ -41,6 +41,8 @@ USER app
 EXPOSE 8000
 
 ENV WORKERS=1
+ENV SAVE_EXPLANATION_IMAGE=False
+ENV SAVE_IMAGE_FOR_NORMA=True
 
 # Команда для запуска в продакшене
 CMD uvicorn service.main:app --host 0.0.0.0 --port 8000 --workers ${WORKERS}
